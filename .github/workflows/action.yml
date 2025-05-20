@@ -30,10 +30,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Make scripts executable
+      - name: Create script wrapper
         run: |
-          chmod -R +x ./.github/actions
-          ls -la ./.github/actions/rc-next-workflow/scripts/      
+          cat > script-wrapper.sh << 'EOF'
+          #!/bin/bash
+          SCRIPT_PATH=$1
+          shift
+          chmod +x "$SCRIPT_PATH"
+          "$SCRIPT_PATH" "$@"
+          EOF
+          chmod +x script-wrapper.sh
+          # Make the directory executable
+          find .github -type d -exec chmod +x {} \;
+          # Make all scripts executable
+          find .github -name "*.sh" -type f -exec chmod +x {} \;   
 
       - name: Run RC Next Workflow
         if: ${{ inputs.environment == 'rc-next' }}
