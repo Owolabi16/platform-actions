@@ -58,7 +58,10 @@ runs:
         echo "BRANCH_NAME=platform-${{ inputs.release_version }}" >> $GITHUB_ENV
         echo "FILE_LOCATION=${{ github.workspace }}" >> $GITHUB_ENV
         echo "TARGET_REPO=${{ inputs.target_repo }}" >> $GITHUB_ENV
-    
+
+    - name: Make scripts executable
+      run: chmod +x ./.github/actions/rc-next-workflow/scripts/*.sh        
+  
     - name: Update chart versions
       shell: bash
       run: ${{ github.action_path }}/scripts/platform-get-versions-from-service.sh "${{ inputs.release_version }}"
