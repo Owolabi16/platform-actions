@@ -59,8 +59,18 @@ runs:
         echo "FILE_LOCATION=${{ github.workspace }}" >> $GITHUB_ENV
         echo "TARGET_REPO=${{ inputs.target_repo }}" >> $GITHUB_ENV
 
+    # Fix the action.yml file by adding shell property to the missing step
+    - name: Fix action.yml
+      run: |
+        sed -i '62s/  run: chmod +x .\/\.github\/actions\/rc-next-workflow\/scripts\/\*\.sh/  run: chmod +x .\/\.github\/actions\/rc-next-workflow\/scripts\/\*\.sh\n      shell: bash/' ./.github/actions/rc-next-workflow/action.yml
+        
+        # Print the modified file to validate changes
+        echo "Modified action.yml:"
+        cat ./.github/actions/rc-next-workflow/action.yml
+    
+    # Make all scripts executable
     - name: Make scripts executable
-      run: chmod +x ./.github/actions/rc-next-workflow/scripts/*.sh        
+      run: find ./.github -name "*.sh" -type f -exec chmod +x {} \;    
   
     - name: Update chart versions
       shell: bash
