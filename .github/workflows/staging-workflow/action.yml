@@ -1,1 +1,100 @@
+name: "Automate Staging Release Process (Composite)"
+description: "Composite action handling release automation with TypeScript integration"
+inputs:
+  release_version:
+    description: "Platform version (x-x-x format)"
+    required: true
+  github_token:
+    description: "GitHub token for authentication"
+    required: true
+  github_actor:
+    description: "GitHub actor/username"
+    required: true
+
+outputs:
+  platform_version:
+    description: "Final platform chart version"
+    value: ${{ steps.set_output.outputs.platform_version }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout consumer's repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Node.js environment
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22.x'
+
+    - name: Configure Git environment
+      shell: bash
+      run: |
+        git config --global user.name "${{ inputs.github_actor }}"
+        git config --global user.email "${{ inputs.github_actor }}@users.noreply.github.com"
+        echo "GITHUB_TOKEN=${{ inputs.github_token }}" >> $GITHUB_ENV
+        gh auth setup-git
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+
+    - name: Update service chart versions
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: scripts/update_service_chart_versions.sh "${{ inputs.release_version }}"
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+
+    - name: Merge service PRs
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: scripts/merge_service_pr.sh "${{ inputs.release_version }}"
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+
+    - name: Wait for workflows to start
+      shell: bash
+      run: sleep 10
+
+    - name: Monitor release workflows
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: node dist/monitor_release.js
+
+    - name: Update infra chart versions
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      run: ${{ github.action_path }}/scripts/update_infra_chart_versions.sh "${{ inputs.release_version }}"
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+
+    - name: Commit changes to infra
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      run: ${{ github.action_path }}/scripts/commit_changes.sh "${{ inputs.release_version }}"
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+
+    - name: Run Helm Dependencies
+      run: helm dependency update
+      shell: bash
+      working-directory: ${{ github.workspace }}/charts/platform
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+
+    - name: Merge infra PR
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: scripts/merge_infra_pr.sh "${{ inputs.release_version }}"
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+
+    - name: Capture platform version
+      id: set_output
+      shell: bash
+      run: |
+        VERSION=$(yq e '.version' Chart.yaml)
+        echo "platform_version=$VERSION" >> $GITHUB_OUTPUT
+      working-directory: ${{ github.workspace }}/charts/platform
 
