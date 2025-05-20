@@ -1,114 +1,114 @@
-name: Build Chart
+name: 'Build Chart'
+description: 'Builds and packages a Helm chart'
 
-on:
-  workflow_call:
-    inputs:
-      chart_dir:
-        description: 'Directory containing the chart to build'
-        required: true
-        type: string
-      chart_overwrite:
-        description: 'Whether to overwrite existing chart'
-        required: false
-        type: boolean
-        default: true
-      is_lib_chart:
-        description: 'Whether this is a library chart'
-        required: false
-        type: boolean
-        default: false
-      git_branch:
-        description: 'Git branch to use'
-        required: true
-        type: string
-      custom-image-name:
-        description: 'Custom image name'
-        required: false
-        type: string
-      build-target:
-        description: 'Build target'
-        required: false
-        type: string
-    outputs:
-      docker-tag:
-        description: 'Docker tag'
-        value: ${{ jobs.build-chart.outputs.docker-tag }}
-      docker-repo:
-        description: 'Docker repository'
-        value: ${{ jobs.build-chart.outputs.docker-repo }}
+inputs:
+  chart_dir:
+    description: 'Directory containing the chart to build'
+    required: true
+  chart_overwrite:
+    description: 'Whether to overwrite existing chart'
+    required: false
+    default: 'true'
+  is_lib_chart:
+    description: 'Whether this is a library chart'
+    required: false
+    default: 'false'
+  git_branch:
+    description: 'Git branch to use'
+    required: true
+  custom-image-name:
+    description: 'Custom image name'
+    required: false
+    default: ''
+  build-target:
+    description: 'Build target'
+    required: false
+    default: ''
+  dockerfile-path:
+    description: 'Path to Dockerfile'
+    required: false
+    default: 'Dockerfile'
+  docker-arch:
+    description: 'Docker architecture'
+    required: false
+    default: 'linux/amd64'
 
-jobs:
-  build-chart:
-    runs-on: ubuntu-latest
-    needs: [check-versions, build-occasio-apps-images]
-    outputs:
-      docker-tag: ${{ steps.meta.outputs.version }}
-      docker-repo: ${{ steps.docker-repo.outputs.DOCKER_REPOSITORY }}
-    steps:
-      - name: Login to Docker Hub
-        uses: docker/login-action@v2
-        with:
-          username: ${{ env.DOCKER_HUB_USER }}
-          password: ${{ secrets.DOCKER_HUB_TOKEN }}
-      
-      - name: Set Docker Repository Variable
-        run: echo "DOCKER_REPOSITORY=${{ env.DOCKER_HUB_USER }}/$( echo ${{ github.repository }} | awk -F '/' '{print $2}' | awk '{print tolower($0)}' )" >> $GITHUB_ENV
-      
-      - name: Set Docker Repository Output
-        id: docker-repo
-        run: echo "DOCKER_REPOSITORY=${{ env.DOCKER_HUB_USER }}/$( echo ${{ github.repository }} | awk -F '/' '{print $2}' | awk '{print tolower($0)}' )" >> $GITHUB_OUTPUT
-      
-      - name: Set Repository Owner
-        run: echo "REPO_OWNER=$( echo ${{ github.repository_owner }} | awk '{print tolower($0)}' )" >> $GITHUB_ENV
-      
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
-      
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+outputs:
+  docker-tag:
+    description: 'Docker tag'
+    value: ${{ steps.meta.outputs.version }}
+  docker-repo:
+    description: 'Docker repository'
+    value: ${{ steps.docker-repo.outputs.DOCKER_REPOSITORY }}
 
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v2
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.PAT_TOKEN }}   
+runs:
+  using: "composite"
+  steps:
+    - name: Login to Docker Hub
+      uses: docker/login-action@v2
+      with:
+        username: ${{ env.DOCKER_HUB_USER || 'occasio' }}
+        password: ${{ env.DOCKER_HUB_TOKEN }}
       
-      - name: Checkout
-        uses: actions/checkout@v3
-        with:
-          ref: ${{ inputs.git_branch }}
+    - name: Set Docker Repository Variable
+      shell: bash
+      run: echo "DOCKER_REPOSITORY=${{ env.DOCKER_HUB_USER || 'occasio' }}/$( echo ${{ github.repository }} | awk -F '/' '{print $2}' | awk '{print tolower($0)}' )" >> $GITHUB_ENV
       
-      - name: Docker meta
-        id: meta
-        uses: docker/metadata-action@v4
-        with:
-          images: |
-            ${{ inputs.custom-image-name != '' && format('{0}/{1}', env.DOCKER_HUB_USER, inputs.custom-image-name) || env.DOCKER_REPOSITORY }}
-          tags: |
-            type=schedule
-            type=ref,event=branch
-            type=ref,event=pr,suffix=${{ inputs.build-target != '' && format('-{0}', inputs.build-target) || ''}}
-            type=semver,pattern={{version}},suffix=${{ inputs.build-target != '' && format('-{0}', inputs.build-target) || ''}}
-            type=semver,pattern={{major}}.{{minor}},suffix=${{ inputs.build-target != '' && format('-{0}', inputs.build-target) || ''}}
-            type=semver,pattern={{major}},suffix=${{ inputs.build-target != '' && format('-{0}', inputs.build-target) || ''}}
-            type=sha
-            type=raw,value=${{ inputs.build-target }}
-           
-      - name: Build and push
-        id: build
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          push: true
-          build-args: ${{ inputs.docker-build-args }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          file: ${{ inputs.dockerfile-path || 'Dockerfile' }}
-          platforms: ${{ inputs.docker-arch || 'linux/amd64' }}
-          pull: true
-          no-cache: false
-          cache-from: type=registry,ref=ghcr.io/${{ env.REPO_OWNER }}/cache:buildcache
-          cache-to: type=registry,ref=ghcr.io/${{ env.REPO_OWNER }}/cache:buildcache,mode=max
-          target: ${{ inputs.build-target }}
-        
+    - name: Set Docker Repository Output
+      id: docker-repo
+      shell: bash
+      run: echo "DOCKER_REPOSITORY=${{ env.DOCKER_HUB_USER || 'occasio' }}/$( echo ${{ github.repository }} | awk -F '/' '{print $2}' | awk '{print tolower($0)}' )" >> $GITHUB_OUTPUT
+      
+    - name: Set Repository Owner
+      shell: bash
+      run: echo "REPO_OWNER=$( echo ${{ github.repository_owner }} | awk '{print tolower($0)}' )" >> $GITHUB_ENV
+      
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v2
+      
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+
+    - name: Login to GitHub Container Registry
+      uses: docker/login-action@v2
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ env.PAT_TOKEN }}
+      
+    - name: Checkout
+      uses: actions/checkout@v3
+      with:
+        ref: ${{ inputs.git_branch }}
+      
+    - name: Docker meta
+      id: meta
+      uses: docker/metadata-action@v4
+      with:
+        images: |
+          ${{ inputs.custom-image-name != '' && format('{0}/{1}', env.DOCKER_HUB_USER || 'occasio', inputs.custom-image-name) || env.DOCKER_REPOSITORY }}
+        tags: |
+          type=schedule
+          type=ref,event=branch
+          type=ref,event=pr,suffix=${{ inputs.build-target != '' && format('-{0}', inputs.build-target) || ''}}
+          type=semver,pattern={{version}},suffix=${{ inputs.build-target != '' && format('-{0}', inputs.build-target) || ''}}
+          type=semver,pattern={{major}}.{{minor}},suffix=${{ inputs.build-target != '' && format('-{0}', inputs.build-target) || ''}}
+          type=semver,pattern={{major}},suffix=${{ inputs.build-target != '' && format('-{0}', inputs.build-target) || ''}}
+          type=sha
+          type=raw,value=${{ inputs.build-target }}
+         
+    - name: Build and push
+      id: build
+      uses: docker/build-push-action@v4
+      with:
+        context: .
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        file: ${{ inputs.dockerfile-path }}
+        platforms: ${{ inputs.docker-arch }}
+        pull: true
+        no-cache: false
+        cache-from: type=registry,ref=ghcr.io/${{ env.REPO_OWNER }}/cache:buildcache
+        cache-to: type=registry,ref=ghcr.io/${{ env.REPO_OWNER }}/cache:buildcache,mode=max
+        target: ${{ inputs.build-target }}
