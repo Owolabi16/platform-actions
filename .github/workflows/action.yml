@@ -43,3 +43,32 @@ jobs:
           helm_username: ocamachine
           helm_registry: ghcr.io/occasio-technology-solutions
           target_repo: ${{ inputs.target_repo }}
+
+      - name: Run Staging Workflow
+        if: ${{ inputs.environment == 'staging' }}
+        id: staging-workflow
+        uses: occasio-technology-solutions/platform-actions/staging-workflow@v0.0.4
+        with:
+          release_version: ${{ inputs.release_version }}
+          github_token: ${{ secrets.GHA_BOT_REPO_TOKEN }}
+          github_actor: ${{ github.actor }}
+
+      - name: Trigger Flux Deployment for RC Next and Staging
+        uses: occasio-technology-solutions/platform-actions/trigger-flux@v0.0.4
+        with:
+          environment: ${{ inputs.environment }}
+          github_token: ${{ secrets.GHA_BOT_REPO_TOKEN }}
+          github_actor: ${{ github.actor }}
+          chart_version: ${{ steps.rc-next-workflow.outputs.platform_version || steps.staging-workflow.outputs.platform_version}}
+
+  build_platform:
+    needs: execute-workflow
+    if: ${{ inputs.environment == 'rc-next' }}
+    uses: occasio-technology-solutions/infra/.github/workflows/build-chart.yaml@development
+    secrets: inherit
+    with:
+      chart_dir: charts/platform
+      chart_overwrite: true
+      is_lib_chart: false
+      git_branch: platform-${{ inputs.release_version }}
+
