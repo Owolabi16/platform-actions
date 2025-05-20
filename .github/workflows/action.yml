@@ -61,14 +61,14 @@ jobs:
           github_actor: ${{ github.actor }}
           chart_version: ${{ steps.rc-next-workflow.outputs.platform_version || steps.staging-workflow.outputs.platform_version}}
 
-build_platform:
-  needs: execute-workflow
-  if: ${{ inputs.environment == 'rc-next' }}
-  uses: ./.github/actions//build-chart.yaml@${{ github.ref }}
-  secrets: inherit
-  with:
-    chart_dir: charts/platform
-    chart_overwrite: true
-    is_lib_chart: false
-    git_branch: platform-${{ inputs.release_version }}
+  build_platform:
+    needs: execute-workflow
+    if: ${{ inputs.environment == 'rc-next' }}
+    uses: ./.github/actions//build-chart.yaml@${{ github.ref }}
+    secrets: inherit
+    with:
+      chart_dir: charts/platform
+      chart_overwrite: true
+      is_lib_chart: false
+      git_branch: platform-${{ inputs.release_version }}
 
