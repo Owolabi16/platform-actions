@@ -1,0 +1,65 @@
+name: "Update HelmRelease Version in Flux Repo"
+description: "Updates the HelmRelease chart version inside the appropriate environment patches directory"
+inputs:
+  environment:
+    description: "Environment (prod, staging, rc-next) whose patches should be updated"
+    required: true
+  chart_version:
+    description: "New Helm chart version"
+    required: true
+  branch_prefix:
+    description: "Branch prefix for PR"
+    required: false
+    default: "update-helm"
+  github_token:
+    description: "GitHub token for authentication"
+    required: true
+  github_actor:
+    description: "GitHub Actor for authentication"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout Flux repo
+      uses: actions/checkout@v4
+      with:
+        repository: occasio-infra/flux
+        token: ${{ inputs.github_token }}
+        path: flux
+
+    - name: Update YAML files in the specified environment
+      shell: bash
+      run: |        
+        # Loop through all YAML files in the patches directory
+        for file in *.yaml; do
+          echo "Updating $file with new chart version: ${{ inputs.chart_version }}"
+          yq e '.spec.chart.spec.version = "${{ inputs.chart_version }}"' -i "$file"
+        done
+      working-directory: flux/tenants/${{ inputs.environment }}/patches
+
+    - name: Commit and push tenant changes
+      shell: bash
+      run: |
+        echo "GITHUB_TOKEN=${{ inputs.github_token }}" >> $GITHUB_ENV
+        git config user.name "${{ inputs.github_actor }}"
+        git config user.email "${{ inputs.github_actor }}@users.noreply.github.com"
+        BRANCH_NAME="${{ inputs.branch_prefix }}-${{ github.run_id }}"
+        echo BRANCH_NAME=$BRANCH_NAME >> $GITHUB_ENV
+        git checkout -B $BRANCH_NAME
+        git add *.yaml
+        git commit -m "chore: Update Helm chart version to ${{ inputs.chart_version }} for ${{ inputs.environment }} environment"
+        git push origin $BRANCH_NAME
+      working-directory: flux/tenants/${{ inputs.environment }}
+
+    - name: Create Pull Request
+      shell: bash
+      run: |
+        default_branch=$(gh repo view --json defaultBranchRef -q '.defaultBranchRef.name')
+        gh pr create \
+          --title "Update Helm chart version to ${{ inputs.chart_version }} for ${{ inputs.environment }}" \
+          --body "Automated deployment ${{ inputs.environment }} environment" \
+          --base $default_branch \
+          --head ${{ env.BRANCH_NAME }} \
+          --reviewer ${{ inputs.github_actor }}
+      working-directory: flux
