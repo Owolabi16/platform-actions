@@ -70,7 +70,7 @@ runs:
     
     # Make all scripts executable
     - name: Make scripts executable
-      run: find ./.github -name "*.sh" -type f -exec chmod +x {} \;    
+      run: find ./.github -name "*.sh" -type f -exec chmod +x {} \; 
   
     - name: Update chart versions
       shell: bash

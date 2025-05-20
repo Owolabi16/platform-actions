@@ -1,3 +1,49 @@
+# name: Deploy Charts to environments
+
+# on:
+#   workflow_dispatch:
+#     inputs:
+#       release_version:
+#         description: 'Release version (format: x-x-x)'
+#         required: true
+#         type: string
+#       environment:
+#         description: 'the environment to deploy to'
+#         required: true
+#         type: choice
+#         options:
+#           - rc-next
+#           - staging
+#           - prod
+#       target_repo:
+#         description: 'Optional: Specific repository to deploy (default: all repos)'
+#         required: false
+#         type: string
+
+# jobs:
+#   execute-workflow:
+#     runs-on: ubuntu-latest
+#     permissions:
+#       contents: write
+#       packages: read
+#     steps:
+#       - name: Checkout repository
+#         uses: actions/checkout@v3
+
+#       - name: Run RC Next Workflow
+#         if: ${{ inputs.environment == 'rc-next' }}
+#         id: rc-next-workflow
+#         uses: ./.github/actions/rc-next-workflow
+#         with:
+#           release_version: ${{ inputs.release_version }}
+#           github_token: ${{ secrets.GHA_BOT_REPO_TOKEN }}
+#           github_actor: ${{ github.actor }}
+#           docker_hub_username: occasio
+#           docker_hub_token: ${{ secrets.DOCKER_HUB_TOKEN }}
+#           helm_username: ocamachine
+#           helm_registry: ghcr.io/occasio-technology-solutions
+#           target_repo: ${{ inputs.target_repo }}
+
 name: Deploy Charts to environments
 
 on:
@@ -28,8 +74,113 @@ jobs:
       packages: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
-
+        uses: actions/checkout@v4
+      
+      # Fix all missing shell properties in action.yml
+      - name: Fix action.yml
+        run: |
+          # Create a temporary file with all the needed changes
+          cat > ./.github/actions/rc-next-workflow/action.yml.new << 'EOF'
+          name: "RC Next Workflow"
+          description: "Triggers rc-next release workflows for platform repositories"
+          inputs:
+            release_version:
+              description: "Platform version (x-x-x format)"
+              required: true
+            github_token:
+              description: "GitHub token for authentication"
+              required: true
+            github_actor:
+              description: "GitHub actor/username"
+              required: true
+            docker_hub_username:
+              description: "Docker Hub username"
+              required: true
+            docker_hub_token:
+              description: "Docker Hub token"
+              required: true
+            helm_username:
+              description: "Helm username"
+              required: true
+            helm_registry:
+              description: "Helm registry"
+              required: true
+            target_repo:
+              description: "Optional: Specific repository to deploy (default: all repos)"
+              required: false
+          
+          outputs:
+            platform_version:
+              description: "Final platform chart version"
+              value: ${{ steps.set_output.outputs.platform_version }}
+          
+          runs:
+            using: "composite"
+            steps:
+              - name: Checkout repository
+                uses: actions/checkout@v4
+                with:
+                  fetch-depth: 0
+          
+              - name: Set up Node.js
+                uses: actions/setup-node@v4
+                with:
+                  node-version: '22.x'
+          
+              - name: Build TypeScript action
+                shell: bash
+                run: |
+                  cd ${{ github.action_path }}
+                  npm install
+                  npm run build
+              
+              - name: Set environment variables
+                shell: bash
+                run: |
+                  echo "GITHUB_TOKEN=${{ inputs.github_token }}" >> $GITHUB_ENV
+                  echo "BRANCH_NAME=platform-${{ inputs.release_version }}" >> $GITHUB_ENV
+                  echo "FILE_LOCATION=${{ github.workspace }}" >> $GITHUB_ENV
+                  echo "TARGET_REPO=${{ inputs.target_repo }}" >> $GITHUB_ENV
+          
+              - name: Make scripts executable
+                shell: bash
+                run: chmod +x ./.github/actions/rc-next-workflow/scripts/*.sh        
+            
+              - name: Update chart versions
+                shell: bash
+                run: ${{ github.action_path }}/scripts/platform-get-versions-from-service.sh "${{ inputs.release_version }}"
+              
+              - name: Run Helm dependencies
+                shell: bash
+                run: ${{ github.action_path }}/scripts/helm-deps.sh 1
+          
+              - name: Check for changes
+                id: check_changes
+                shell: bash
+                run: ${{ github.action_path }}/scripts/check-changes.sh
+          
+              - name: Trigger platform workflows
+                shell: bash
+                run: node ${{ github.action_path }}/dist/trigger.js
+          
+              - name: Set platform version output
+                id: set_output
+                shell: bash
+                run: |
+                  VERSION="${{ inputs.release_version }}"
+                  echo "platform_version=$VERSION" >> $GITHUB_OUTPUT
+          EOF
+          
+          # Replace the original file with our fixed version
+          mv ./.github/actions/rc-next-workflow/action.yml.new ./.github/actions/rc-next-workflow/action.yml
+          
+          # Make sure all scripts are executable
+          find ./.github -name "*.sh" -type f -exec chmod +x {} \;
+          
+          # Print the modified file to validate changes
+          echo "Modified action.yml:"
+          cat ./.github/actions/rc-next-workflow/action.yml
+      
       - name: Run RC Next Workflow
         if: ${{ inputs.environment == 'rc-next' }}
         id: rc-next-workflow
