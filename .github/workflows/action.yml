@@ -47,14 +47,14 @@ jobs:
       - name: Run Staging Workflow
         if: ${{ inputs.environment == 'staging' }}
         id: staging-workflow
-        uses: occasio-technology-solutions/platform-actions/staging-workflow@v0.0.4
+        uses: ./.github/actions/staging-workflow
         with:
           release_version: ${{ inputs.release_version }}
           github_token: ${{ secrets.GHA_BOT_REPO_TOKEN }}
           github_actor: ${{ github.actor }}
 
       - name: Trigger Flux Deployment for RC Next and Staging
-        uses: occasio-technology-solutions/platform-actions/trigger-flux@v0.0.4
+        uses: ./.github/actions/trigger-flux
         with:
           environment: ${{ inputs.environment }}
           github_token: ${{ secrets.GHA_BOT_REPO_TOKEN }}
@@ -64,7 +64,7 @@ jobs:
   build_platform:
     needs: execute-workflow
     if: ${{ inputs.environment == 'rc-next' }}
-    uses: occasio-technology-solutions/infra/.github/workflows/build-chart.yaml@development
+    uses: ./.github/actions//build-chart.yaml
     secrets: inherit
     with:
       chart_dir: charts/platform
