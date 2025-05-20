@@ -30,7 +30,7 @@ jobs:
       - name: Run RC Next Workflow
         if: ${{ inputs.environment == 'rc-next' }}
         id: rc-next-workflow
-        uses: ./.github/actions/rc-next-workflow@v0.0.5
+        uses: ./.github/actions/rc-next-workflow
         with:
           release_version: ${{ inputs.release_version }}
           github_token: ${{ secrets.GHA_BOT_REPO_TOKEN }}
