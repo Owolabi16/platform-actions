@@ -25,6 +25,7 @@ jobs:
     permissions:
       contents: write
       packages: read
+      pull-requests: write  # Added for PR creation
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -53,6 +54,7 @@ jobs:
           github_actor: ${{ github.actor }}
           target_repo: ${{ inputs.target_repo }}
           docker_hub_token: ${{ secrets.DOCKER_HUB_TOKEN }}
+          docker_hub_username: owolabialiu  # Added explicit username
           
       - name: Trigger Flux Deployment for RC Next and Staging
         uses: ./.github/actions/trigger-flux
