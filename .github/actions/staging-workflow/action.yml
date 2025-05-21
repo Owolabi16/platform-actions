@@ -14,177 +14,143 @@ inputs:
   target_repo:
     description: 'Optional: Specific repository to deploy'
     required: false
+  docker_hub_token:
+    description: 'Docker Hub token for authentication'
+    required: true
 
 outputs:
   platform_version:
     description: 'Platform chart version'
-    value: ${{ steps.get_version.outputs.version }}
+    value: ${{ steps.parse_version.outputs.version }}
 
 runs:
   using: "composite"
   steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-    
-    - name: Calculate new version
-      id: bump_version
+    - name: Parse version
+      id: parse_version
       shell: bash
       run: |
-        CURRENT_VERSION="${{ inputs.current_version }}"
-        PATCH_TYPE="${{ inputs.patch_type }}"
-        
-        # Split version into components
-        IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
-        
-        # Increment version based on patch type
-        if [ "$PATCH_TYPE" == "patch" ]; then
-          PATCH=$((PATCH + 1))
-        elif [ "$PATCH_TYPE" == "minor" ]; then
-          MINOR=$((MINOR + 1))
-          PATCH=0
-        elif [ "$PATCH_TYPE" == "major" ]; then
-          MAJOR=$((MAJOR + 1))
-          MINOR=0
-          PATCH=0
-        fi
-        
-        # Create new version string
-        NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
-        echo "New version: $NEW_VERSION"
-        echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+        RELEASE_VERSION="${{ inputs.release_version }}"
+        # Remove any 'v' prefix if present
+        RELEASE_VERSION="${RELEASE_VERSION#v}"
+        echo "Version: $RELEASE_VERSION"
+        echo "version=$RELEASE_VERSION" >> $GITHUB_OUTPUT
     
     - name: Create branch
       id: create_branch
-      shell: bash      
+      shell: bash
       run: |
-        NEW_VERSION="${{ steps.bump_version.outputs.new_version }}"
-        BRANCH_NAME="platform-${NEW_VERSION}"
+        BRANCH_NAME="platform-${{ inputs.release_version }}"
         
-        git config --global user.name "GitHub Actions"
-        git config --global user.email "actions@github.com"
+        git config --global user.name "${{ inputs.github_actor }}"
+        git config --global user.email "${{ inputs.github_actor }}@users.noreply.github.com"
         
-        git checkout -b $BRANCH_NAME
+        # Try to checkout branch if it exists, create it if it doesn't
+        git checkout $BRANCH_NAME 2>/dev/null || git checkout -b $BRANCH_NAME
+        
         echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
     
     - name: Update chart versions
-      shell: bash    
+      shell: bash
       run: |
-        NEW_VERSION="${{ steps.bump_version.outputs.new_version }}"
+        VERSION="${{ steps.parse_version.outputs.version }}"
         
         # Update Chart.yaml
         if [ -f "charts/platform/Chart.yaml" ]; then
-          yq e ".version = \"$NEW_VERSION\"" -i charts/platform/Chart.yaml
-          yq e ".appVersion = \"$NEW_VERSION\"" -i charts/platform/Chart.yaml
+          echo "Updating Chart.yaml with version $VERSION"
+          yq e ".version = \"$VERSION\"" -i charts/platform/Chart.yaml
+          yq e ".appVersion = \"$VERSION\"" -i charts/platform/Chart.yaml
+        else
+          echo "Chart.yaml not found at charts/platform/Chart.yaml"
+          find charts -name "Chart.yaml" || echo "No Chart.yaml files found"
         fi
         
         # Update values.yaml if it exists
         if [ -f "charts/platform/values.yaml" ]; then
-          yq e ".appVersion = \"$NEW_VERSION\"" -i charts/platform/values.yaml
+          echo "Updating values.yaml with version $VERSION"
+          yq e ".appVersion = \"$VERSION\"" -i charts/platform/values.yaml
         fi
     
     - name: Commit and push changes
-      shell: bash    
+      shell: bash
       run: |
+        # Add all changes to git
         git add .
-        git commit -m "chore: bump version to ${{ steps.bump_version.outputs.new_version }}"
-        git push origin ${{ steps.create_branch.outputs.branch_name }}
+        
+        # Commit changes (don't fail if nothing to commit)
+        git commit -m "chore: bump version to ${{ steps.parse_version.outputs.version }}" || echo "No changes to commit"
+        
+        # Set up authentication for push
+        git remote set-url origin https://${{ inputs.github_actor }}:${{ inputs.github_token }}@github.com/${{ github.repository }}.git
+        
+        # Push changes
+        git push -u origin ${{ steps.create_branch.outputs.branch_name }}
     
-    - name: Create PR
-      id: create_pr
-      shell: bash      
-      uses: peter-evans/create-pull-request@v5
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        title: "Patch Release: v${{ steps.bump_version.outputs.new_version }}"
-        body: |
-          ## Patch Release v${{ steps.bump_version.outputs.new_version }}
-          
-          This PR updates the chart version for a patch release.
-          - From version: ${{ inputs.current_version }}
-          - To version: ${{ steps.bump_version.outputs.new_version }}
-        base: ${{ inputs.base_branch }}
-        branch: ${{ steps.create_branch.outputs.branch_name }}
-
-build-chart:
-  needs: patch-release
-  runs-on: ubuntu-latest
-  steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        ref: ${{ needs.patch-release.outputs.branch_name }}
+    - name: Create PR via API
+      shell: bash
+      run: |
+        # Create PR using curl and GitHub API
+        PR_RESPONSE=$(curl -s -X POST \
+          -H "Authorization: token ${{ inputs.github_token }}" \
+          -H "Accept: application/vnd.github.v3+json" \
+          https://api.github.com/repos/${{ github.repository }}/pulls \
+          -d '{
+            "title": "Patch Release: ${{ steps.parse_version.outputs.version }}",
+            "body": "This PR updates the chart version to ${{ steps.parse_version.outputs.version }}",
+            "head": "${{ steps.create_branch.outputs.branch_name }}",
+            "base": "main"
+          }')
+        
+        echo "PR created:"
+        echo "$PR_RESPONSE" | grep -E 'html_url|message' || echo "Could not parse PR response"
     
-    - name: Login to Docker Hub
-      uses: docker/login-action@v2
-      with:
-        username: owolabialiu
-        password: ${{ secrets.DOCKER_HUB_TOKEN }}
-    
-    - name: Set up QEMU
-      uses: docker/setup-qemu-action@v2
-    
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v2
-    
-    - name: Docker meta
-      id: meta
-      uses: docker/metadata-action@v4
-      with:
-        images: owolabialiu/platform-actions
-        tags: |
-          type=ref,event=branch
-          type=sha
-          type=raw,value=${{ needs.patch-release.outputs.new_version }}
-    
-    - name: Build and push Docker image
-      uses: docker/build-push-action@v4
-      with:
-        context: .
-        push: true
-        tags: ${{ steps.meta.outputs.tags }}
-        labels: ${{ steps.meta.outputs.labels }}
-        file: Dockerfile
-        platforms: linux/amd64
+    - name: Build Docker image
+      shell: bash
+      run: |
+        echo "Setting up Docker for build"
+        
+        # Set up Docker buildx
+        docker buildx create --use --name builder-${{ github.run_id }} || true
+        
+        # Build and push Docker image
+        docker buildx build \
+          --push \
+          --platform linux/amd64 \
+          -t "owolabialiu/platform-actions:${{ steps.parse_version.outputs.version }}" \
+          -t "owolabialiu/platform-actions:latest" \
+          -f Dockerfile .
     
     - name: Package Helm chart
+      shell: bash
       run: |
         echo "Building chart from charts/platform"
-        helm package charts/platform -d helm-charts
-        ls -la helm-charts
-
-  deploy-to-staging:
-    needs: [patch-release, build-chart]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.patch-release.outputs.branch_name }}
-      
-      - name: Set TARGET_REPO environment variable
-        run: |
-          echo "TARGET_REPO=${{ inputs.target_repo }}" >> $GITHUB_ENV
-      
-      - name: Run trigger.js to deploy to staging
-        run: |
-          echo "Triggering deployment to staging for version ${{ needs.patch-release.outputs.new_version }}"
-          export BRANCH_NAME="platform-${{ needs.patch-release.outputs.new_version }}"
-          export GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
-          export FILE_LOCATION=${{ github.workspace }}
-          
-          # Install dependencies if needed
+        mkdir -p helm-charts
+        
+        # Package the chart
+        helm package charts/platform -d helm-charts || echo "Failed to package chart"
+        
+        # List the generated packages
+        ls -la helm-charts || echo "No Helm charts generated"
+    
+    - name: Deploy to staging
+      shell: bash
+      run: |
+        echo "Triggering deployment to staging for version ${{ steps.parse_version.outputs.version }}"
+        export BRANCH_NAME="${{ steps.create_branch.outputs.branch_name }}"
+        export GITHUB_TOKEN="${{ inputs.github_token }}"
+        export FILE_LOCATION="${{ github.workspace }}"
+        export TARGET_REPO="${{ inputs.target_repo }}"
+        
+        # Check if rc-next-workflow exists
+        if [ -d "./.github/actions/rc-next-workflow" ]; then
+          # Install dependencies
           cd ./.github/actions/rc-next-workflow
-          npm install
-          npm run build
+          npm install || echo "Failed to install dependencies"
+          npm run build || echo "Failed to build"
           
-          # Run the script to trigger workflows
-          node dist/trigger.js
-      
-      - name: Update deployment status
-        run: |
-          echo "Deployment to staging triggered for version ${{ needs.patch-release.outputs.new_version }}"
-          if [ -n "${{ inputs.target_repo }}" ]; then
-            echo "Target repository: ${{ inputs.target_repo }}"
-          else
-            echo "Deploying to all repositories"
-          fi
+          # Run the script
+          node dist/trigger.js || echo "Failed to run trigger.js"
+        else
+          echo "rc-next-workflow directory not found"
+          find .github -type d | grep -i workflow || echo "No workflow directories found"
+        fi

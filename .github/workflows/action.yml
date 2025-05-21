@@ -1,5 +1,4 @@
 name: Deploy Charts to environments
-
 on:
   workflow_dispatch:
     inputs:
@@ -28,22 +27,22 @@ jobs:
       packages: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
-
+        uses: actions/checkout@v4
+        
       - name: Run RC Next Workflow
         if: ${{ inputs.environment == 'rc-next' }}
         id: rc-next-workflow
         uses: ./.github/actions/rc-next-workflow
         with:
           release_version: ${{ inputs.release_version }}
-          github_token: ${{ secrets.GHA_BOT_REPO_TOKEN }}
+          github_token: ${{ secrets.PAT_TOKEN }}
           github_actor: ${{ github.actor }}
           docker_hub_username: occasio
           docker_hub_token: ${{ secrets.DOCKER_HUB_TOKEN }}
           helm_username: ocamachine
           helm_registry: ghcr.io/occasio-technology-solutions
           target_repo: ${{ inputs.target_repo }}
-
+          
       - name: Run Staging Workflow
         if: ${{ inputs.environment == 'staging' }}
         id: staging-workflow
@@ -52,31 +51,32 @@ jobs:
           release_version: ${{ inputs.release_version }}
           github_token: ${{ secrets.PAT_TOKEN }}
           github_actor: ${{ github.actor }}
-
+          target_repo: ${{ inputs.target_repo }}
+          docker_hub_token: ${{ secrets.DOCKER_HUB_TOKEN }}
+          
       - name: Trigger Flux Deployment for RC Next and Staging
         uses: ./.github/actions/trigger-flux
         with:
           environment: ${{ inputs.environment }}
           github_token: ${{ secrets.PAT_TOKEN }}
           github_actor: ${{ github.actor }}
-          chart_version: ${{ steps.rc-next-workflow.outputs.platform_version || steps.staging-workflow.outputs.platform_version}}
-
+          chart_version: ${{ inputs.environment == 'rc-next' && steps.rc-next-workflow.outputs.platform_version || steps.staging-workflow.outputs.platform_version }}
+          
   build_platform:
     needs: execute-workflow
     if: ${{ inputs.environment == 'rc-next' }}
-    runs-on: ubuntu-latest  # This is required
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      
+        
       - name: Build Chart
         uses: ./.github/actions/build-chart
         with:
           chart_dir: charts/platform
           chart_overwrite: true
           is_lib_chart: false
-          git_branch: platform-v0.0.5
+          git_branch: platform-${{ inputs.release_version }}
           docker-hub-user: owolabialiu
           docker-hub-token: ${{ secrets.DOCKER_HUB_TOKEN }}
           pat-token: ${{ secrets.PAT_TOKEN }}
-
