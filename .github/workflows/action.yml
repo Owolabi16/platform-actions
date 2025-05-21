@@ -75,9 +75,8 @@ jobs:
           chart_dir: charts/platform
           chart_overwrite: true
           is_lib_chart: false
-          git_branch: platform-${{ inputs.release_version }}
-        env:
-          DOCKER_HUB_USER: owolabialiu
-          DOCKER_HUB_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
-          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+          git_branch: platform-v0.0.5
+          docker-hub-user: owolabialiu
+          docker-hub-token: ${{ secrets.DOCKER_HUB_TOKEN }}
+          pat-token: ${{ secrets.PAT_TOKEN }}
 
