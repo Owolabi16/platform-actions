@@ -48,7 +48,7 @@ runs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
-        token: ${{ secrets.PAT_TOKEN }}
+        token: ${{ inputs.pat-token }}
         fetch-tags: true
         ref: ${{ inputs.branch }}
 
