@@ -24,7 +24,7 @@ runs:
     - name: Checkout Flux repo
       uses: actions/checkout@v4
       with:
-        token: ${{ inputs.github_token }}
+        token: ${{ secrets.PAT_TOKEN }}
         path: flux
 
     - name: Update YAML files in the specified environment
@@ -40,7 +40,7 @@ runs:
     - name: Commit and push tenant changes
       shell: bash
       run: |
-        echo "GITHUB_TOKEN=${{ inputs.github_token }}" >> $GITHUB_ENV
+        echo "GITHUB_TOKEN=${{ secrets.PAT_TOKEN }}" >> $GITHUB_ENV
         git config user.name "${{ inputs.github_actor }}"
         git config user.email "${{ inputs.github_actor }}@users.noreply.github.com"
         BRANCH_NAME="${{ inputs.branch_prefix }}-${{ github.run_id }}"
