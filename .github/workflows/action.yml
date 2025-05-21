@@ -77,7 +77,7 @@ jobs:
           is_lib_chart: false
           git_branch: platform-${{ inputs.release_version }}
         env:
-          DOCKER_HUB_USER: ${{ env.DOCKER_HUB_USER }}
+          DOCKER_HUB_USER: owolabialiu
           DOCKER_HUB_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
           PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
 
