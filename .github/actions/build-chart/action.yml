@@ -32,6 +32,16 @@ inputs:
     description: 'Docker architecture'
     required: false
     default: 'linux/amd64'
+  docker-hub-user:
+    description: 'Docker Hub username'
+    required: false
+    default: 'occasio'
+  docker-hub-token:
+    description: 'Docker Hub token'
+    required: true
+  pat-token:
+    description: 'GitHub Personal Access Token'
+    required: true
 
 outputs:
   docker-tag:
@@ -50,7 +60,7 @@ runs:
         fetch-depth: 0
         token: ${{ inputs.pat-token }}
         fetch-tags: true
-        ref: ${{ inputs.branch }}
+        ref: ${{ inputs.git_branch }}
 
     - name: Login to Docker Hub
       uses: docker/login-action@v2
@@ -60,12 +70,12 @@ runs:
       
     - name: Set Docker Repository Variable
       shell: bash
-      run: echo "DOCKER_REPOSITORY=${{ env.DOCKER_HUB_USER || 'occasio' }}/$( echo ${{ github.repository }} | awk -F '/' '{print $2}' | awk '{print tolower($0)}' )" >> $GITHUB_ENV
+      run: echo "DOCKER_REPOSITORY=${{ inputs.docker-hub-user }}/$( echo ${{ github.repository }} | awk -F '/' '{print $2}' | awk '{print tolower($0)}' )" >> $GITHUB_ENV
       
     - name: Set Docker Repository Output
       id: docker-repo
       shell: bash
-      run: echo "DOCKER_REPOSITORY=${{ env.DOCKER_HUB_USER || 'occasio' }}/$( echo ${{ github.repository }} | awk -F '/' '{print $2}' | awk '{print tolower($0)}' )" >> $GITHUB_OUTPUT
+      run: echo "DOCKER_REPOSITORY=${{ inputs.docker-hub-user }}/$( echo ${{ github.repository }} | awk -F '/' '{print $2}' | awk '{print tolower($0)}' )" >> $GITHUB_OUTPUT
       
     - name: Set Repository Owner
       shell: bash
@@ -82,19 +92,14 @@ runs:
       with:
         registry: ghcr.io
         username: ${{ github.actor }}
-        password: ${{ env.PAT_TOKEN }}
-      
-    - name: Checkout
-      uses: actions/checkout@v3
-      with:
-        ref: ${{ inputs.git_branch }}
+        password: ${{ inputs.pat-token }}
       
     - name: Docker meta
       id: meta
       uses: docker/metadata-action@v4
       with:
         images: |
-          ${{ inputs.custom-image-name != '' && format('{0}/{1}', env.DOCKER_HUB_USER || 'occasio', inputs.custom-image-name) || env.DOCKER_REPOSITORY }}
+          ${{ inputs.custom-image-name != '' && format('{0}/{1}', inputs.docker-hub-user, inputs.custom-image-name) || env.DOCKER_REPOSITORY }}
         tags: |
           type=schedule
           type=ref,event=branch
@@ -120,3 +125,16 @@ runs:
         cache-from: type=registry,ref=ghcr.io/${{ env.REPO_OWNER }}/cache:buildcache
         cache-to: type=registry,ref=ghcr.io/${{ env.REPO_OWNER }}/cache:buildcache,mode=max
         target: ${{ inputs.build-target }}
+    
+    - name: Helm Package
+      shell: bash
+      run: |
+        # Add Helm packaging steps here
+        echo "Building chart from ${{ inputs.chart_dir }}"
+        
+        # Example Helm package command
+        if [ "${{ inputs.chart_overwrite }}" == "true" ]; then
+          helm package ${{ inputs.chart_dir }} --force
+        else
+          helm package ${{ inputs.chart_dir }}
+        fi
