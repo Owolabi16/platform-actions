@@ -1,164 +1,151 @@
-name: Patch Release to Staging
+name: 'Staging Workflow'
+description: 'Handles patch releases to staging environment'
 
-on:
-  workflow_dispatch:
-    inputs:
-      current_version:
-        description: 'Current version (format: x.y.z)'
-        required: true
-        type: string
-      patch_type:
-        description: 'Type of patch'
-        required: true
-        type: choice
-        options:
-          - patch
-          - minor
-          - major
-        default: 'patch'
-      base_branch:
-        description: 'Base branch to create PR against'
-        required: true
-        default: 'development'
-        type: string
-      target_repo:
-        description: 'Optional: Specific repository to deploy (default: all repos)'
-        required: false
-        type: string
+inputs:
+  release_version:
+    description: 'Release version (format: x-x-x)'
+    required: true
+  github_token:
+    description: 'GitHub token for authentication'
+    required: true
+  github_actor:
+    description: 'GitHub actor/username'
+    required: true
+  target_repo:
+    description: 'Optional: Specific repository to deploy'
+    required: false
 
-jobs:
-  patch-release:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-    outputs:
-      new_version: ${{ steps.bump_version.outputs.new_version }}
-      branch_name: ${{ steps.create_branch.outputs.branch_name }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      
-      - name: Calculate new version
-        id: bump_version
-        run: |
-          CURRENT_VERSION="${{ inputs.current_version }}"
-          PATCH_TYPE="${{ inputs.patch_type }}"
+outputs:
+  platform_version:
+    description: 'Platform chart version'
+    value: ${{ steps.get_version.outputs.version }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Calculate new version
+      id: bump_version
+      run: |
+        CURRENT_VERSION="${{ inputs.current_version }}"
+        PATCH_TYPE="${{ inputs.patch_type }}"
+        
+        # Split version into components
+        IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+        
+        # Increment version based on patch type
+        if [ "$PATCH_TYPE" == "patch" ]; then
+          PATCH=$((PATCH + 1))
+        elif [ "$PATCH_TYPE" == "minor" ]; then
+          MINOR=$((MINOR + 1))
+          PATCH=0
+        elif [ "$PATCH_TYPE" == "major" ]; then
+          MAJOR=$((MAJOR + 1))
+          MINOR=0
+          PATCH=0
+        fi
+        
+        # Create new version string
+        NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+        echo "New version: $NEW_VERSION"
+        echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+    
+    - name: Create branch
+      id: create_branch
+      run: |
+        NEW_VERSION="${{ steps.bump_version.outputs.new_version }}"
+        BRANCH_NAME="platform-${NEW_VERSION}"
+        
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
+        
+        git checkout -b $BRANCH_NAME
+        echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+    
+    - name: Update chart versions
+      run: |
+        NEW_VERSION="${{ steps.bump_version.outputs.new_version }}"
+        
+        # Update Chart.yaml
+        if [ -f "charts/platform/Chart.yaml" ]; then
+          yq e ".version = \"$NEW_VERSION\"" -i charts/platform/Chart.yaml
+          yq e ".appVersion = \"$NEW_VERSION\"" -i charts/platform/Chart.yaml
+        fi
+        
+        # Update values.yaml if it exists
+        if [ -f "charts/platform/values.yaml" ]; then
+          yq e ".appVersion = \"$NEW_VERSION\"" -i charts/platform/values.yaml
+        fi
+    
+    - name: Commit and push changes
+      run: |
+        git add .
+        git commit -m "chore: bump version to ${{ steps.bump_version.outputs.new_version }}"
+        git push origin ${{ steps.create_branch.outputs.branch_name }}
+    
+    - name: Create PR
+      id: create_pr
+      uses: peter-evans/create-pull-request@v5
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        title: "Patch Release: v${{ steps.bump_version.outputs.new_version }}"
+        body: |
+          ## Patch Release v${{ steps.bump_version.outputs.new_version }}
           
-          # Split version into components
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
-          
-          # Increment version based on patch type
-          if [ "$PATCH_TYPE" == "patch" ]; then
-            PATCH=$((PATCH + 1))
-          elif [ "$PATCH_TYPE" == "minor" ]; then
-            MINOR=$((MINOR + 1))
-            PATCH=0
-          elif [ "$PATCH_TYPE" == "major" ]; then
-            MAJOR=$((MAJOR + 1))
-            MINOR=0
-            PATCH=0
-          fi
-          
-          # Create new version string
-          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
-          echo "New version: $NEW_VERSION"
-          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
-      
-      - name: Create branch
-        id: create_branch
-        run: |
-          NEW_VERSION="${{ steps.bump_version.outputs.new_version }}"
-          BRANCH_NAME="platform-${NEW_VERSION}"
-          
-          git config --global user.name "GitHub Actions"
-          git config --global user.email "actions@github.com"
-          
-          git checkout -b $BRANCH_NAME
-          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
-      
-      - name: Update chart versions
-        run: |
-          NEW_VERSION="${{ steps.bump_version.outputs.new_version }}"
-          
-          # Update Chart.yaml
-          if [ -f "charts/platform/Chart.yaml" ]; then
-            yq e ".version = \"$NEW_VERSION\"" -i charts/platform/Chart.yaml
-            yq e ".appVersion = \"$NEW_VERSION\"" -i charts/platform/Chart.yaml
-          fi
-          
-          # Update values.yaml if it exists
-          if [ -f "charts/platform/values.yaml" ]; then
-            yq e ".appVersion = \"$NEW_VERSION\"" -i charts/platform/values.yaml
-          fi
-      
-      - name: Commit and push changes
-        run: |
-          git add .
-          git commit -m "chore: bump version to ${{ steps.bump_version.outputs.new_version }}"
-          git push origin ${{ steps.create_branch.outputs.branch_name }}
-      
-      - name: Create PR
-        id: create_pr
-        uses: peter-evans/create-pull-request@v5
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          title: "Patch Release: v${{ steps.bump_version.outputs.new_version }}"
-          body: |
-            ## Patch Release v${{ steps.bump_version.outputs.new_version }}
-            
-            This PR updates the chart version for a patch release.
-            - From version: ${{ inputs.current_version }}
-            - To version: ${{ steps.bump_version.outputs.new_version }}
-          base: ${{ inputs.base_branch }}
-          branch: ${{ steps.create_branch.outputs.branch_name }}
-  
-  build-chart:
-    needs: patch-release
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.patch-release.outputs.branch_name }}
-      
-      - name: Login to Docker Hub
-        uses: docker/login-action@v2
-        with:
-          username: owolabialiu
-          password: ${{ secrets.DOCKER_HUB_TOKEN }}
-      
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
-      
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-      
-      - name: Docker meta
-        id: meta
-        uses: docker/metadata-action@v4
-        with:
-          images: owolabialiu/platform-actions
-          tags: |
-            type=ref,event=branch
-            type=sha
-            type=raw,value=${{ needs.patch-release.outputs.new_version }}
-      
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          file: Dockerfile
-          platforms: linux/amd64
-      
-      - name: Package Helm chart
-        run: |
-          echo "Building chart from charts/platform"
-          helm package charts/platform -d helm-charts
-          ls -la helm-charts
+          This PR updates the chart version for a patch release.
+          - From version: ${{ inputs.current_version }}
+          - To version: ${{ steps.bump_version.outputs.new_version }}
+        base: ${{ inputs.base_branch }}
+        branch: ${{ steps.create_branch.outputs.branch_name }}
+
+build-chart:
+  needs: patch-release
+  runs-on: ubuntu-latest
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ needs.patch-release.outputs.branch_name }}
+    
+    - name: Login to Docker Hub
+      uses: docker/login-action@v2
+      with:
+        username: owolabialiu
+        password: ${{ secrets.DOCKER_HUB_TOKEN }}
+    
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v2
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+    
+    - name: Docker meta
+      id: meta
+      uses: docker/metadata-action@v4
+      with:
+        images: owolabialiu/platform-actions
+        tags: |
+          type=ref,event=branch
+          type=sha
+          type=raw,value=${{ needs.patch-release.outputs.new_version }}
+    
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v4
+      with:
+        context: .
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        file: Dockerfile
+        platforms: linux/amd64
+    
+    - name: Package Helm chart
+      run: |
+        echo "Building chart from charts/platform"
+        helm package charts/platform -d helm-charts
+        ls -la helm-charts
 
   deploy-to-staging:
     needs: [patch-release, build-chart]
