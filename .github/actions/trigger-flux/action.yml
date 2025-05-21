@@ -24,41 +24,62 @@ runs:
     - name: Checkout Flux repo
       uses: actions/checkout@v4
       with:
-        token: ${{ secrets.PAT_TOKEN }}
+        token: ${{ inputs.github_token }}
         path: flux
+
+    - name: Setup Git credentials
+      shell: bash
+      run: |
+        # Configure Git to use the token for authentication
+        git config --global credential.helper store
+        echo "https://${{ inputs.github_token }}@github.com" > ~/.git-credentials
+        git config --global user.name "${{ inputs.github_actor }}"
+        git config --global user.email "${{ inputs.github_actor }}@users.noreply.github.com"
 
     - name: Update YAML files in the specified environment
       shell: bash
-      run: |        
+      run: |
+        # Check if directory exists
+        if [ ! -d "flux/tenants/${{ inputs.environment }}/patches" ]; then
+          echo "Error: Directory flux/tenants/${{ inputs.environment }}/patches does not exist"
+          ls -la flux/tenants || echo "No tenants directory"
+          exit 1
+        fi
+        
         # Loop through all YAML files in the patches directory
+        cd flux/tenants/${{ inputs.environment }}/patches
         for file in *.yaml; do
-          echo "Updating $file with new chart version: ${{ inputs.chart_version }}"
-          yq e '.spec.chart.spec.version = "${{ inputs.chart_version }}"' -i "$file"
+          if [ -f "$file" ]; then
+            echo "Updating $file with new chart version: ${{ inputs.chart_version }}"
+            yq e '.spec.chart.spec.version = "${{ inputs.chart_version }}"' -i "$file"
+          else
+            echo "No YAML files found in patches directory"
+            ls -la
+          fi
         done
-      working-directory: flux/tenants/${{ inputs.environment }}/patches
 
     - name: Commit and push tenant changes
       shell: bash
       run: |
-        echo "GITHUB_TOKEN=${{ secrets.PAT_TOKEN }}" >> $GITHUB_ENV
-        git config user.name "${{ inputs.github_actor }}"
-        git config user.email "${{ inputs.github_actor }}@users.noreply.github.com"
+        cd flux
         BRANCH_NAME="${{ inputs.branch_prefix }}-${{ github.run_id }}"
-        echo BRANCH_NAME=$BRANCH_NAME >> $GITHUB_ENV
+        echo "Using branch: $BRANCH_NAME"
         git checkout -B $BRANCH_NAME
-        git add *.yaml
+        git add .
         git commit -m "chore: Update Helm chart version to ${{ inputs.chart_version }} for ${{ inputs.environment }} environment"
-        git push origin $BRANCH_NAME
-      working-directory: flux/tenants/${{ inputs.environment }}
+        # Use token explicitly in the Git push command
+        git push "https://${{ inputs.github_token }}@github.com/${{ github.repository }}" $BRANCH_NAME
 
     - name: Create Pull Request
       shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}  # Use GH_TOKEN for gh CLI
       run: |
+        cd flux
         default_branch=$(gh repo view --json defaultBranchRef -q '.defaultBranchRef.name')
         gh pr create \
           --title "Update Helm chart version to ${{ inputs.chart_version }} for ${{ inputs.environment }}" \
           --body "Automated deployment ${{ inputs.environment }} environment" \
           --base $default_branch \
-          --head ${{ env.BRANCH_NAME }} \
+          --head $BRANCH_NAME \
           --reviewer ${{ inputs.github_actor }}
-      working-directory: flux
