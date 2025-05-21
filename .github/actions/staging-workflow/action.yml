@@ -28,6 +28,7 @@ runs:
     
     - name: Calculate new version
       id: bump_version
+      shell: bash
       run: |
         CURRENT_VERSION="${{ inputs.current_version }}"
         PATCH_TYPE="${{ inputs.patch_type }}"
@@ -54,6 +55,7 @@ runs:
     
     - name: Create branch
       id: create_branch
+      shell: bash      
       run: |
         NEW_VERSION="${{ steps.bump_version.outputs.new_version }}"
         BRANCH_NAME="platform-${NEW_VERSION}"
@@ -65,6 +67,7 @@ runs:
         echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
     
     - name: Update chart versions
+      shell: bash    
       run: |
         NEW_VERSION="${{ steps.bump_version.outputs.new_version }}"
         
@@ -80,6 +83,7 @@ runs:
         fi
     
     - name: Commit and push changes
+      shell: bash    
       run: |
         git add .
         git commit -m "chore: bump version to ${{ steps.bump_version.outputs.new_version }}"
@@ -87,6 +91,7 @@ runs:
     
     - name: Create PR
       id: create_pr
+      shell: bash      
       uses: peter-evans/create-pull-request@v5
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
