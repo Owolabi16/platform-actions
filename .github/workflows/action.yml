@@ -57,7 +57,7 @@ jobs:
         uses: ./.github/actions/trigger-flux
         with:
           environment: ${{ inputs.environment }}
-          github_token: ${{ secrets.GHA_BOT_REPO_TOKEN }}
+          github_token: ${{ secrets.PAT_TOKEN }}
           github_actor: ${{ github.actor }}
           chart_version: ${{ steps.rc-next-workflow.outputs.platform_version || steps.staging-workflow.outputs.platform_version}}
 
