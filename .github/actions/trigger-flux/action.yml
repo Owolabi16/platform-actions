@@ -24,7 +24,6 @@ runs:
     - name: Checkout Flux repo
       uses: actions/checkout@v4
       with:
-        repository: occasio-infra/flux
         token: ${{ inputs.github_token }}
         path: flux
 
