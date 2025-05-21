@@ -21,42 +21,17 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - name: Configure Git
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      
+    - name: Create Directory Structure
       shell: bash
       run: |
-        # Configure Git with credential helper
-        git config --global credential.helper store
-        
-        # Store credentials (this avoids putting token in URL)
-        echo "https://${{ inputs.github_actor }}:${{ inputs.github_token }}@github.com" > ~/.git-credentials
-        
-        # Set Git identity
-        git config --global user.name "${{ inputs.github_actor }}"
-        git config --global user.email "${{ inputs.github_actor }}@users.noreply.github.com"
-        
-        # Verify configuration
-        echo "Git configuration complete"
-
-    - name: Clone Repository
-      shell: bash
-      run: |
-        # Clone repository (using the stored credentials)
-        echo "Cloning repository..."
-        git clone --depth=1 https://github.com/${{ github.repository }}.git flux
-        cd flux
-        
-        # Verify clone worked
-        echo "Repository cloned successfully"
-        ls -la
-
-    - name: Create Test Files
-      shell: bash
-      run: |
-        # Create test directories if they don't exist
-        mkdir -p flux/tenants/${{ inputs.environment }}/patches
+        # Create the directory structure
+        mkdir -p tenants/${{ inputs.environment }}/patches
         
         # Create a test YAML file
-        cat > flux/tenants/${{ inputs.environment }}/patches/test-helmrelease.yaml << EOF
+        cat > tenants/${{ inputs.environment }}/patches/test-helmrelease.yaml << EOF
         apiVersion: helm.toolkit.fluxcd.io/v2beta1
         kind: HelmRelease
         metadata:
@@ -64,73 +39,32 @@ runs:
         spec:
           chart:
             spec:
-              version: "0.1.0"
+              version: "${{ inputs.chart_version }}"
         EOF
         
         echo "Created test files"
-        ls -la flux/tenants/${{ inputs.environment }}/patches/
+        ls -la tenants/${{ inputs.environment }}/patches/
 
-    - name: Update YAML Files
+    - name: Create Branch and PR
       shell: bash
       run: |
-        cd flux/tenants/${{ inputs.environment }}/patches
-        
-        # Loop through all YAML files
-        for file in *.yaml; do
-          if [ -f "$file" ]; then
-            echo "Updating $file with new chart version: ${{ inputs.chart_version }}"
-            yq -i '.spec.chart.spec.version = "${{ inputs.chart_version }}"' "$file"
-          fi
-        done
-        
-        # Show the changes
-        cat *.yaml
-
-    - name: Commit and Push Changes
-      shell: bash
-      run: |
-        cd flux
-        
-        # Create and checkout new branch
+        # Set branch name
         BRANCH_NAME="${{ inputs.branch_prefix }}-${{ github.run_id }}"
-        echo "Using branch: $BRANCH_NAME"
-        git checkout -b $BRANCH_NAME
-        
-        # Add and commit changes
-        git add .
-        git commit -m "chore: Update Helm chart version to ${{ inputs.chart_version }} for ${{ inputs.environment }} environment"
-        
-        # Push using stored credentials
-        echo "Pushing changes..."
-        git push origin $BRANCH_NAME
-        
-        # Set branch name in env for PR creation
-        echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
-
-    - name: Create Pull Request with GitHub CLI
-      shell: bash
-      run: |
-        cd flux
-        
-        # Install GitHub CLI if not available
-        if ! command -v gh &> /dev/null; then
-          echo "Installing GitHub CLI..."
-          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-          sudo apt update
-          sudo apt install gh
-        fi
-        
-        # Authenticate with GitHub CLI
-        echo "${{ inputs.github_token }}" | gh auth login --with-token
+        echo "Using branch name: $BRANCH_NAME"
         
         # Get default branch
-        DEFAULT_BRANCH=$(git remote show origin | grep 'HEAD branch' | cut -d' ' -f5)
+        DEFAULT_BRANCH=$(curl -s -H "Authorization: token ${{ inputs.github_token }}" \
+          "https://api.github.com/repos/${{ github.repository }}" | jq -r '.default_branch')
         echo "Default branch: $DEFAULT_BRANCH"
         
-        # Create PR
-        gh pr create \
-          --title "Update Helm chart version to ${{ inputs.chart_version }} for ${{ inputs.environment }}" \
-          --body "Automated deployment for ${{ inputs.environment }} environment" \
-          --base $DEFAULT_BRANCH \
-          --head $BRANCH_NAME
+        # Get latest commit SHA from default branch
+        SHA=$(curl -s -H "Authorization: token ${{ inputs.github_token }}" \
+          "https://api.github.com/repos/${{ github.repository }}/git/refs/heads/$DEFAULT_BRANCH" | jq -r '.object.sha')
+        echo "Latest commit SHA: $SHA"
+        
+        # Create a new branch reference
+        curl -s -X POST \
+          -H "Authorization: token ${{ inputs.github_token }}" \
+          -H "Accept: application/vnd.github.v3+json" \
+          -d "{\"ref\":\"refs/heads/$BRANCH_NAME\",\"sha\":\"$SHA\"}" \
+          "https://api.github.com/repos/${{ github.repository }}/git/refs"
