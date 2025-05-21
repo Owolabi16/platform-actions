@@ -64,7 +64,7 @@ jobs:
   build_platform:
     needs: execute-workflow
     if: ${{ inputs.environment == 'rc-next' }}
-    uses: ./.github/actions/build-chart/action.yml@${{github.ref}}    
+    uses: ./.github/actions/build-chart/action.yml    
     secrets: inherit
     with:
       chart_dir: charts/platform
