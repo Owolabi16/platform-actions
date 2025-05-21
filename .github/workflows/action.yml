@@ -64,11 +64,20 @@ jobs:
   build_platform:
     needs: execute-workflow
     if: ${{ inputs.environment == 'rc-next' }}
-    uses: ./.github/actions/build-chart/action.yml    
-    secrets: inherit
-    with:
-      chart_dir: charts/platform
-      chart_overwrite: true
-      is_lib_chart: false
-      git_branch: platform-${{ inputs.release_version }}
+    runs-on: ubuntu-latest  # This is required
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Build Chart
+        uses: ./.github/actions/build-chart
+        with:
+          chart_dir: charts/platform
+          chart_overwrite: true
+          is_lib_chart: false
+          git_branch: platform-${{ inputs.release_version }}
+        env:
+          DOCKER_HUB_USER: ${{ env.DOCKER_HUB_USER }}
+          DOCKER_HUB_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
 
