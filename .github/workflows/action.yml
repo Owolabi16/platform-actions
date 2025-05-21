@@ -47,7 +47,7 @@ jobs:
       - name: Run Staging Workflow
         if: ${{ inputs.environment == 'staging' }}
         id: staging-workflow
-        uses: ./.github/actions/staging-workflow
+        uses: ./.github/workflows/patch-release-to-staging.yaml
         with:
           release_version: ${{ inputs.release_version }}
           github_token: ${{ secrets.GHA_BOT_REPO_TOKEN }}
