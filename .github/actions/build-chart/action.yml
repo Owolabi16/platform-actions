@@ -125,7 +125,7 @@ runs:
         
         # Example Helm package command
         if [ "${{ inputs.chart_overwrite }}" == "true" ]; then
-          helm package ${{ inputs.chart_dir }} --force
+          helm package ${{ inputs.chart_dir }} 
         else
           helm package ${{ inputs.chart_dir }}
         fi
