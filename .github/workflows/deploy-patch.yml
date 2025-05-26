@@ -364,7 +364,7 @@ jobs:
             echo "🚀 PR was auto-merged, triggering $ENVIRONMENT deployment..."
             
             # Trigger your existing deployment workflow
-            gh workflow run deploy-charts.yml \
+            gh workflow run "Deploy Charts to environments" \
               --field release_version="$DASH_VERSION" \
               --field environment="$ENVIRONMENT"
             
