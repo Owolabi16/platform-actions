@@ -273,8 +273,7 @@ jobs:
             --title "🚀 Patch Release v$SEMVER_VERSION" \
             --body "$PR_BODY" \
             --base "$BASE_BRANCH" \
-            --head "$BRANCH_NAME" \
-            --label "patch-release,$VERSION_TYPE-release,$ENVIRONMENT-deployment")
+            --head "$BRANCH_NAME")
           
           PR_NUMBER=$(gh pr view "$PR_URL" --json number -q '.number')
           
