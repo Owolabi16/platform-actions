@@ -19,10 +19,10 @@ on:
         description: 'Base branch for PR'
         required: false
         type: choice
-        default: 'development'
+        default: 'main'
         options:
-          - development
           - main
+          - development
           - staging
       auto_merge:
         description: 'Auto-merge PR when checks pass'
@@ -190,8 +190,14 @@ jobs:
             exit 0
           fi
           
-          # Stage changes
-          git add charts/platform/ version.txt 2>/dev/null || true
+          # Stage all changes (including modified files)
+          git add -A
+          
+          # Verify we have staged changes
+          if git diff --cached --quiet; then
+            echo "⚠️ No staged changes to commit"
+            exit 0
+          fi
           
           # Create commit
           git commit -m "chore: bump platform version to $SEMVER_VERSION" \
