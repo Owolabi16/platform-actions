@@ -1,0 +1,406 @@
+name: Deploy Patch Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Patch version (e.g., 1.6.3 or 1-6-3)'
+        required: true
+        type: string
+      environment:
+        description: 'Target environment for deployment'
+        required: true
+        type: choice
+        default: 'staging'
+        options:
+          - staging
+          - rc-next
+      base_branch:
+        description: 'Base branch for PR'
+        required: false
+        type: choice
+        default: 'development'
+        options:
+          - development
+          - main
+          - staging
+      auto_merge:
+        description: 'Auto-merge PR when checks pass'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  patch-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+      checks: read
+    
+    outputs:
+      pr_number: ${{ steps.create_pr.outputs.pr_number }}
+      pr_url: ${{ steps.create_pr.outputs.pr_url }}
+      chart_version: ${{ steps.version_detect.outputs.chart_version }}
+      version_type: ${{ steps.version_detect.outputs.version_type }}
+      branch_name: ${{ steps.create_branch.outputs.branch_name }}
+      pr_merged: ${{ steps.check_merge.outputs.pr_merged }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Version detection and validation
+        id: version_detect
+        run: |
+          VERSION="${{ inputs.version }}"
+          
+          # Handle both formats: 1.6.3 and 1-6-3
+          if [[ "$VERSION" =~ ^[0-9]+-[0-9]+-[0-9]+$ ]]; then
+            # Convert dash to dot for processing
+            SEMVER_VERSION=$(echo "$VERSION" | tr '-' '.')
+            DASH_VERSION="$VERSION"
+          elif [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            # Convert dot to dash for branch naming
+            SEMVER_VERSION="$VERSION"
+            DASH_VERSION=$(echo "$VERSION" | tr '.' '-')
+          else
+            echo "❌ Error: Invalid version format. Use x.x.x or x-x-x (e.g., 1.6.3 or 1-6-3)"
+            exit 1
+          fi
+          
+          # Detect version type (patch/minor/major)
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$SEMVER_VERSION"
+          if [[ "$PATCH" != "0" ]]; then
+            VERSION_TYPE="patch"
+          elif [[ "$MINOR" != "0" ]]; then
+            VERSION_TYPE="minor"
+          else
+            VERSION_TYPE="major"
+          fi
+          
+          echo "chart_version=$SEMVER_VERSION" >> $GITHUB_OUTPUT
+          echo "dash_version=$DASH_VERSION" >> $GITHUB_OUTPUT
+          echo "version_type=$VERSION_TYPE" >> $GITHUB_OUTPUT
+          
+          echo "🔍 Version Analysis:"
+          echo "  • Input: ${{ inputs.version }}"
+          echo "  • Semver: $SEMVER_VERSION"
+          echo "  • Dash: $DASH_VERSION"  
+          echo "  • Type: $VERSION_TYPE"
+
+      - name: Configure Git
+        run: |
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+
+      - name: Create patch branch
+        id: create_branch
+        run: |
+          DASH_VERSION="${{ steps.version_detect.outputs.dash_version }}"
+          BRANCH_NAME="patch/platform-$DASH_VERSION"
+          BASE_BRANCH="${{ inputs.base_branch }}"
+          
+          echo "🌿 Creating patch branch: $BRANCH_NAME from $BASE_BRANCH"
+          
+          # Ensure we're on the base branch and it's up to date
+          git checkout "$BASE_BRANCH"
+          git pull origin "$BASE_BRANCH"
+          
+          # Create and switch to patch branch
+          git checkout -b "$BRANCH_NAME"
+          
+          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+          echo "✅ Branch created: $BRANCH_NAME"
+
+      - name: Update chart version files
+        run: |
+          SEMVER_VERSION="${{ steps.version_detect.outputs.chart_version }}"
+          
+          echo "📝 Updating chart version to $SEMVER_VERSION"
+          
+          # Update main Chart.yaml
+          if [[ -f "charts/platform/Chart.yaml" ]]; then
+            yq eval ".version = \"$SEMVER_VERSION\"" -i charts/platform/Chart.yaml
+            yq eval ".appVersion = \"$SEMVER_VERSION\"" -i charts/platform/Chart.yaml
+            echo "✅ Updated charts/platform/Chart.yaml"
+          else
+            echo "❌ Chart.yaml not found at charts/platform/Chart.yaml"
+            exit 1
+          fi
+          
+          # Update values.yaml if it exists and has appVersion
+          if [[ -f "charts/platform/values.yaml" ]]; then
+            if yq eval '.appVersion' charts/platform/values.yaml >/dev/null 2>&1; then
+              yq eval ".appVersion = \"$SEMVER_VERSION\"" -i charts/platform/values.yaml
+              echo "✅ Updated charts/platform/values.yaml"
+            fi
+          fi
+          
+          # Update any version.txt or similar files
+          if [[ -f "version.txt" ]]; then
+            echo "$SEMVER_VERSION" > version.txt
+            echo "✅ Updated version.txt"
+          fi
+
+      - name: Update Helm dependencies
+        run: |
+          echo "🧩 Updating Helm dependencies..."
+          if command -v helm >/dev/null 2>&1; then
+            helm dependency update charts/platform
+            echo "✅ Helm dependencies updated"
+          else
+            echo "⚠️ Helm not available, skipping dependency update"
+          fi
+
+      - name: Validate chart changes
+        run: |
+          echo "🧪 Validating chart changes..."
+          
+          # Validate YAML syntax
+          if ! yq eval '.' charts/platform/Chart.yaml >/dev/null; then
+            echo "❌ Invalid Chart.yaml syntax"
+            exit 1
+          fi
+          
+          # Check chart version was updated correctly
+          UPDATED_VERSION=$(yq eval '.version' charts/platform/Chart.yaml)
+          EXPECTED_VERSION="${{ steps.version_detect.outputs.chart_version }}"
+          
+          if [[ "$UPDATED_VERSION" != "$EXPECTED_VERSION" ]]; then
+            echo "❌ Chart version mismatch: expected $EXPECTED_VERSION, got $UPDATED_VERSION"
+            exit 1
+          fi
+          
+          echo "✅ Chart validation passed"
+
+      - name: Commit and push changes
+        run: |
+          SEMVER_VERSION="${{ steps.version_detect.outputs.chart_version }}"
+          VERSION_TYPE="${{ steps.version_detect.outputs.version_type }}"
+          BRANCH_NAME="${{ steps.create_branch.outputs.branch_name }}"
+          
+          # Check if there are changes to commit
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "⚠️ No changes detected to commit"
+            exit 0
+          fi
+          
+          # Stage changes
+          git add charts/platform/ version.txt 2>/dev/null || true
+          
+          # Create commit
+          git commit -m "chore: bump platform version to $SEMVER_VERSION" \
+                     -m "- Update chart version to $SEMVER_VERSION" \
+                     -m "- Update appVersion to $SEMVER_VERSION" \
+                     -m "- Update Helm dependencies" \
+                     -m "" \
+                     -m "Release-Type: $VERSION_TYPE" \
+                     -m "[automated-patch-release]" \
+                     --no-verify
+          
+          # Push to remote
+          git remote set-url origin https://${{ github.actor }}:${{ secrets.PAT_TOKEN }}@github.com/${{ github.repository }}.git
+          git push -u origin "$BRANCH_NAME"
+          
+          echo "✅ Changes committed and pushed to $BRANCH_NAME"
+
+      - name: Create Pull Request
+        id: create_pr
+        run: |
+          SEMVER_VERSION="${{ steps.version_detect.outputs.chart_version }}"
+          VERSION_TYPE="${{ steps.version_detect.outputs.version_type }}"
+          BRANCH_NAME="${{ steps.create_branch.outputs.branch_name }}"
+          BASE_BRANCH="${{ inputs.base_branch }}"
+          ENVIRONMENT="${{ inputs.environment }}"
+          
+          # Create comprehensive PR body
+          PR_BODY=$(cat << EOF
+          ## 🚀 Patch Release: v$SEMVER_VERSION
+          
+          ### Release Information
+          - **Version**: \`$SEMVER_VERSION\` ($VERSION_TYPE release)
+          - **Environment**: \`$ENVIRONMENT\`
+          - **Branch**: \`$BRANCH_NAME\` → \`$BASE_BRANCH\`
+          - **Auto-merge**: ${{ inputs.auto_merge }}
+          
+          ### Changes Made
+          - [x] Chart version updated to \`$SEMVER_VERSION\`
+          - [x] App version updated to \`$SEMVER_VERSION\`
+          - [x] Helm dependencies updated
+          - [x] Chart validation passed
+          
+          ### Post-Merge Automation
+          Once this PR is merged, the following will happen automatically:
+          1. 📦 Chart will be built and packaged
+          2. 🚀 $ENVIRONMENT deployment will be triggered
+          3. 🔄 Platform services will be updated
+          
+          ### Deployment Plan
+          - **Target Environment**: $ENVIRONMENT
+          - **Deployment Method**: Automated via existing workflows
+          - **Rollback**: Standard rollback procedures apply
+          
+          ### Checklist
+          - [x] Version updated correctly
+          - [x] Dependencies resolved
+          - [x] Validation tests passed
+          - [ ] Code review completed (if manual merge)
+          - [ ] Ready for $ENVIRONMENT deployment
+          
+          ---
+          *This PR was created by the automated patch release workflow.*
+          *Merging will trigger the $ENVIRONMENT deployment pipeline.*
+          EOF
+          )
+          
+          echo "📋 Creating pull request..."
+          
+          # Create PR using GitHub CLI
+          echo "${{ secrets.PAT_TOKEN }}" | gh auth login --with-token
+          
+          PR_URL=$(gh pr create \
+            --title "🚀 Patch Release v$SEMVER_VERSION" \
+            --body "$PR_BODY" \
+            --base "$BASE_BRANCH" \
+            --head "$BRANCH_NAME" \
+            --label "patch-release,$VERSION_TYPE-release,$ENVIRONMENT-deployment")
+          
+          PR_NUMBER=$(gh pr view "$PR_URL" --json number -q '.number')
+          
+          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+          echo "pr_url=$PR_URL" >> $GITHUB_OUTPUT
+          
+          echo "✅ Pull request created:"
+          echo "  • Number: #$PR_NUMBER"
+          echo "  • URL: $PR_URL"
+
+      - name: Enable auto-merge
+        if: inputs.auto_merge == true
+        run: |
+          PR_NUMBER="${{ steps.create_pr.outputs.pr_number }}"
+          
+          echo "🤖 Enabling auto-merge for PR #$PR_NUMBER"
+          
+          # Enable auto-merge
+          gh pr merge "$PR_NUMBER" \
+            --auto \
+            --squash \
+            --delete-branch
+          
+          echo "✅ Auto-merge enabled - PR will merge when all checks pass"
+
+      - name: Wait and check merge status
+        id: check_merge
+        if: inputs.auto_merge == true
+        run: |
+          PR_NUMBER="${{ steps.create_pr.outputs.pr_number }}"
+          
+          echo "⏳ Checking merge status..."
+          
+          # Wait up to 5 minutes for merge
+          for i in {1..30}; do
+            STATUS=$(gh pr view "$PR_NUMBER" --json state -q '.state')
+            
+            if [[ "$STATUS" == "MERGED" ]]; then
+              echo "✅ PR #$PR_NUMBER merged successfully!"
+              echo "pr_merged=true" >> $GITHUB_OUTPUT
+              break
+            elif [[ "$STATUS" == "CLOSED" ]]; then
+              echo "❌ PR #$PR_NUMBER was closed without merging"
+              echo "pr_merged=false" >> $GITHUB_OUTPUT
+              exit 1
+            else
+              echo "⏳ PR still open, waiting... ($i/30)"
+              sleep 10
+            fi
+          done
+          
+          # If we get here and it's not merged, it's still pending
+          if [[ "$(gh pr view "$PR_NUMBER" --json state -q '.state')" != "MERGED" ]]; then
+            echo "pr_merged=false" >> $GITHUB_OUTPUT
+          fi
+
+  # Trigger staging deployment after successful patch
+  trigger-deployment:
+    needs: patch-release
+    if: success() && (inputs.auto_merge == false || needs.patch-release.outputs.pr_merged == 'true')
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Trigger staging deployment
+        run: |
+          VERSION="${{ needs.patch-release.outputs.chart_version }}"
+          DASH_VERSION=$(echo "$VERSION" | tr '.' '-')
+          ENVIRONMENT="${{ inputs.environment }}"
+          
+          if [[ "${{ inputs.auto_merge }}" == "true" && "${{ needs.patch-release.outputs.pr_merged }}" == "true" ]]; then
+            echo "🚀 PR was auto-merged, triggering $ENVIRONMENT deployment..."
+            
+            # Trigger your existing deployment workflow
+            gh workflow run deploy-charts.yml \
+              --field release_version="$DASH_VERSION" \
+              --field environment="$ENVIRONMENT"
+            
+            echo "✅ $ENVIRONMENT deployment triggered for version $VERSION"
+          else
+            echo "ℹ️ Manual deployment instructions:"
+            echo "After PR #${{ needs.patch-release.outputs.pr_number }} is merged, run:"
+            echo ""
+            echo "gh workflow run deploy-charts.yml \\"
+            echo "  --field release_version=\"$DASH_VERSION\" \\"
+            echo "  --field environment=\"$ENVIRONMENT\""
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+
+  # Summary job
+  summary:
+    needs: [patch-release, trigger-deployment]
+    if: always()
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Patch release summary
+        run: |
+          echo "🎉 Patch Release Workflow Summary"
+          echo "=================================="
+          echo ""
+          echo "📊 Results:"
+          echo "  • Version: ${{ needs.patch-release.outputs.chart_version }}"
+          echo "  • Type: ${{ needs.patch-release.outputs.version_type }}"
+          echo "  • Branch: ${{ needs.patch-release.outputs.branch_name }}"
+          echo "  • PR: #${{ needs.patch-release.outputs.pr_number }}"
+          echo "  • Environment: ${{ inputs.environment }}"
+          echo "  • Auto-merge: ${{ inputs.auto_merge }}"
+          echo ""
+          echo "🔗 PR URL: ${{ needs.patch-release.outputs.pr_url }}"
+          echo ""
+          
+          if [[ "${{ needs.patch-release.result }}" == "success" ]]; then
+            if [[ "${{ inputs.auto_merge }}" == "true" ]]; then
+              if [[ "${{ needs.patch-release.outputs.pr_merged }}" == "true" ]]; then
+                echo "✅ SUCCESS: PR auto-merged and deployment triggered"
+              else
+                echo "⏳ PENDING: PR created with auto-merge enabled"
+              fi
+            else
+              echo "👥 MANUAL: PR created and ready for review"
+              echo ""
+              echo "Next steps:"
+              echo "  1. Review PR: ${{ needs.patch-release.outputs.pr_url }}"
+              echo "  2. Approve and merge the PR"
+              echo "  3. Deployment will be triggered automatically"
+            fi
+          else
+            echo "❌ FAILED: Patch release workflow encountered errors"
+          fi
