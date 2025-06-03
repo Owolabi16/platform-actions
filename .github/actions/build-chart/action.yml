@@ -41,7 +41,16 @@ inputs:
     description: 'Docker architectures to build'
     required: false
     type: string
-
+  docker-hub-user:
+    description: 'Docker Hub username'
+    required: false
+    default: 'occasio'
+  docker-hub-token:
+    description: 'Docker Hub token'
+    required: true
+  pat-token:
+    description: 'GitHub Personal Access Token'
+    required: true
 
 outputs:
   docker-tag:
