@@ -342,7 +342,7 @@ runs:
         echo "**Image:** $FINAL_IMAGE" >> $GITHUB_STEP_SUMMARY
 
     - name: Upload vulnerability scan artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: ${{ inputs.skip_vulnerability_scan != 'true' }}
       with:
         name: vulnerability-scan-results-${{ github.run_id }}
