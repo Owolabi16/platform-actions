@@ -180,11 +180,14 @@ runs:
         # Check if Copa is already installed
         if ! command -v copa &> /dev/null; then
           echo "Installing Copacetic..."
-          COPA_VERSION="v0.7.1"
-          wget -O copa.tar.gz "https://github.com/project-copacetic/copacetic/releases/download/${COPA_VERSION}/copa_${COPA_VERSION#v}_linux_amd64.tar.gz"
-          tar -xzf copa.tar.gz
+          COPA_VERSION="v0.10.0"
+          
+          # Download Copa binary directly
+          wget -O copa "https://github.com/project-copacetic/copacetic/releases/download/${COPA_VERSION}/copa_${COPA_VERSION#v}_linux_amd64"
+          chmod +x copa
           sudo mv copa /usr/local/bin/
-          rm copa.tar.gz
+          
+          echo "Copa installed successfully"
         else
           echo "Copa already installed"
         fi
