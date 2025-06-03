@@ -82,10 +82,11 @@ runs:
   using: "composite"
   steps:
     - name: Login to Docker Hub
-      uses: docker/login-action@v2
+      uses: docker/login-action@v3
       with:
         username: ${{ inputs.docker-hub-user }}
         password: ${{ inputs.docker-hub-token }}
+        logout: false
       
     - name: Set Docker Repository Variable
       shell: bash
@@ -107,11 +108,12 @@ runs:
       uses: docker/setup-buildx-action@v2
 
     - name: Login to GitHub Container Registry
-      uses: docker/login-action@v2
+      uses: docker/login-action@v3
       with:
         registry: ghcr.io
         username: ${{ github.actor }}
         password: ${{ inputs.pat-token }}
+        logout: false
       
     - name: Docker meta
       id: meta
@@ -267,30 +269,37 @@ runs:
       run: |
         IMAGE="$ORIGINAL_IMAGE"
         
-        # Create a valid patched tag by replacing the original tag with a patched version
+        echo "Patching image: $IMAGE"
+        
+        # Extract the current tag from the image
         if [[ "$IMAGE" == *":"* ]]; then
-          # Image has a tag, replace it
-          IMAGE_BASE="${IMAGE%:*}"
-          ORIGINAL_TAG="${IMAGE##*:}"
-          PATCHED_IMAGE="${IMAGE_BASE}:${ORIGINAL_TAG}-patched"
+          REPO="${IMAGE%:*}"
+          CURRENT_TAG="${IMAGE##*:}"
+          PATCHED_TAG="${CURRENT_TAG}-patched"
         else
-          # Image has no tag (assumes latest), add patched suffix
-          PATCHED_IMAGE="${IMAGE}:latest-patched"
+          REPO="$IMAGE"
+          CURRENT_TAG="latest"
+          PATCHED_TAG="latest-patched"
         fi
         
-        echo "Patching image: $IMAGE"
-        echo "Output image: $PATCHED_IMAGE"
+        echo "Repository: $REPO"
+        echo "Current tag: $CURRENT_TAG"
+        echo "Patched tag: $PATCHED_TAG"
         
-        # Run Copa to patch the image
+        # Run Copa to patch the image - Copa creates the new tag automatically
         if copa patch \
           --image "$IMAGE" \
           --report trivy-results.json \
-          --tag "$PATCHED_IMAGE" \
+          --tag "$PATCHED_TAG" \
           --timeout "${{ inputs.copa_timeout }}"; then
           
           echo "✅ Patching completed successfully"
           
+          # Construct the full patched image name
+          PATCHED_IMAGE="${REPO}:${PATCHED_TAG}"
+          
           # Push the patched image
+          echo "Pushing patched image: $PATCHED_IMAGE"
           docker push "$PATCHED_IMAGE"
           
           echo "patched-image=$PATCHED_IMAGE" >> $GITHUB_OUTPUT
