@@ -1,5 +1,5 @@
 name: 'Build Chart'
-description: 'Builds and packages a Helm chart'
+description: 'Builds and packages a Helm chart with vulnerability scanning'
 
 inputs:
   chart_dir:
@@ -42,6 +42,18 @@ inputs:
   pat-token:
     description: 'GitHub Personal Access Token'
     required: true
+  skip_vulnerability_scan:
+    description: 'Skip vulnerability scanning and patching'
+    required: false
+    default: 'false'
+  vulnerability_severity_threshold:
+    description: 'Minimum severity to patch (LOW, MEDIUM, HIGH, CRITICAL)'
+    required: false
+    default: 'HIGH'
+  copa_timeout:
+    description: 'Timeout for Copacetic patching'
+    required: false
+    default: '10m'
 
 outputs:
   docker-tag:
@@ -50,6 +62,21 @@ outputs:
   docker-repo:
     description: 'Docker repository'
     value: ${{ steps.docker-repo.outputs.DOCKER_REPOSITORY }}
+  original-image:
+    description: 'Original built image'
+    value: ${{ steps.set-original-image.outputs.image }}
+  patched-image:
+    description: 'Patched image (if vulnerabilities were found and patched)'
+    value: ${{ steps.copa-patch.outputs.patched-image }}
+  final-image:
+    description: 'Final image to use (patched if available, otherwise original)'
+    value: ${{ steps.determine-final-image.outputs.final-image }}
+  vulnerability-count:
+    description: 'Number of vulnerabilities found'
+    value: ${{ steps.trivy-scan.outputs.vulnerability-count }}
+  high-critical-count:
+    description: 'Number of high/critical vulnerabilities found'
+    value: ${{ steps.trivy-scan.outputs.high-critical-count }}
 
 runs:
   using: "composite"
@@ -116,6 +143,215 @@ runs:
         cache-from: type=registry,ref=ghcr.io/${{ env.REPO_OWNER }}/cache:buildcache
         cache-to: type=registry,ref=ghcr.io/${{ env.REPO_OWNER }}/cache:buildcache,mode=max
         target: ${{ inputs.build-target }}
+
+    - name: Set Original Image
+      id: set-original-image
+      shell: bash
+      run: |
+        # Get the first tag from metadata (should be the main image)
+        ORIGINAL_IMAGE=$(echo '${{ steps.meta.outputs.tags }}' | head -n1)
+        echo "image=$ORIGINAL_IMAGE" >> $GITHUB_OUTPUT
+        echo "ORIGINAL_IMAGE=$ORIGINAL_IMAGE" >> $GITHUB_ENV
+        echo "Original image: $ORIGINAL_IMAGE"
+
+    # Vulnerability Scanning Section
+    - name: Install Trivy
+      if: ${{ inputs.skip_vulnerability_scan != 'true' }}
+      shell: bash
+      run: |
+        # Check if Trivy is already installed
+        if ! command -v trivy &> /dev/null; then
+          echo "Installing Trivy..."
+          sudo apt-get update
+          sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+          echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee -a /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install -y trivy
+        else
+          echo "Trivy already installed"
+        fi
+        trivy --version
+
+    - name: Install Copacetic (Copa)
+      if: ${{ inputs.skip_vulnerability_scan != 'true' }}
+      shell: bash
+      run: |
+        # Check if Copa is already installed
+        if ! command -v copa &> /dev/null; then
+          echo "Installing Copacetic..."
+          COPA_VERSION="v0.7.1"
+          wget -O copa.tar.gz "https://github.com/project-copacetic/copacetic/releases/download/${COPA_VERSION}/copa_${COPA_VERSION#v}_linux_amd64.tar.gz"
+          tar -xzf copa.tar.gz
+          sudo mv copa /usr/local/bin/
+          rm copa.tar.gz
+        else
+          echo "Copa already installed"
+        fi
+        copa --version
+
+    - name: Run Trivy vulnerability scan
+      id: trivy-scan
+      if: ${{ inputs.skip_vulnerability_scan != 'true' }}
+      shell: bash
+      run: |
+        IMAGE="$ORIGINAL_IMAGE"
+        echo "Scanning image: $IMAGE"
+        
+        # Run Trivy scan and save results
+        trivy image --format json --output trivy-results.json "$IMAGE"
+        
+        # Also generate SARIF for GitHub Security tab (if supported)
+        trivy image --format sarif --output trivy-results.sarif "$IMAGE" || echo "SARIF format not supported in this Trivy version"
+        
+        # Count vulnerabilities by severity
+        TOTAL_COUNT=$(jq '[.Results[]?.Vulnerabilities[]?] | length' trivy-results.json 2>/dev/null || echo "0")
+        HIGH_CRITICAL_COUNT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH" or .Severity == "CRITICAL")] | length' trivy-results.json 2>/dev/null || echo "0")
+        CRITICAL_COUNT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' trivy-results.json 2>/dev/null || echo "0")
+        HIGH_COUNT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' trivy-results.json 2>/dev/null || echo "0")
+        MEDIUM_COUNT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "MEDIUM")] | length' trivy-results.json 2>/dev/null || echo "0")
+        LOW_COUNT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "LOW")] | length' trivy-results.json 2>/dev/null || echo "0")
+        
+        echo "vulnerability-count=$TOTAL_COUNT" >> $GITHUB_OUTPUT
+        echo "high-critical-count=$HIGH_CRITICAL_COUNT" >> $GITHUB_OUTPUT
+        echo "TOTAL_COUNT=$TOTAL_COUNT" >> $GITHUB_ENV
+        echo "HIGH_CRITICAL_COUNT=$HIGH_CRITICAL_COUNT" >> $GITHUB_ENV
+        echo "CRITICAL_COUNT=$CRITICAL_COUNT" >> $GITHUB_ENV
+        echo "HIGH_COUNT=$HIGH_COUNT" >> $GITHUB_ENV
+        echo "MEDIUM_COUNT=$MEDIUM_COUNT" >> $GITHUB_ENV
+        echo "LOW_COUNT=$LOW_COUNT" >> $GITHUB_ENV
+        
+        # Determine if patching is needed based on threshold
+        THRESHOLD="${{ inputs.vulnerability_severity_threshold }}"
+        NEEDS_PATCHING=false
+        
+        case "$THRESHOLD" in
+          "CRITICAL")
+            [ "$CRITICAL_COUNT" -gt 0 ] && NEEDS_PATCHING=true
+            ;;
+          "HIGH")
+            [ "$HIGH_CRITICAL_COUNT" -gt 0 ] && NEEDS_PATCHING=true
+            ;;
+          "MEDIUM")
+            [ $((HIGH_CRITICAL_COUNT + MEDIUM_COUNT)) -gt 0 ] && NEEDS_PATCHING=true
+            ;;
+          "LOW")
+            [ "$TOTAL_COUNT" -gt 0 ] && NEEDS_PATCHING=true
+            ;;
+        esac
+        
+        echo "NEEDS_PATCHING=$NEEDS_PATCHING" >> $GITHUB_ENV
+        
+        # Display summary
+        echo "### 🔍 Vulnerability Scan Summary" >> $GITHUB_STEP_SUMMARY
+        echo "**Image:** $IMAGE" >> $GITHUB_STEP_SUMMARY
+        echo "**Total Vulnerabilities:** $TOTAL_COUNT" >> $GITHUB_STEP_SUMMARY
+        echo "**Critical:** $CRITICAL_COUNT | **High:** $HIGH_COUNT | **Medium:** $MEDIUM_COUNT | **Low:** $LOW_COUNT" >> $GITHUB_STEP_SUMMARY
+        echo "**Severity Threshold:** $THRESHOLD" >> $GITHUB_STEP_SUMMARY
+        
+        if [ "$NEEDS_PATCHING" == "true" ]; then
+          echo "⚠️ **Action Required:** Found vulnerabilities above threshold. Attempting to patch with Copacetic..." >> $GITHUB_STEP_SUMMARY
+        else
+          echo "✅ **No Action Required:** No vulnerabilities found above the $THRESHOLD threshold!" >> $GITHUB_STEP_SUMMARY
+        fi
+
+    - name: Patch vulnerabilities with Copacetic
+      id: copa-patch
+      if: ${{ inputs.skip_vulnerability_scan != 'true' && env.NEEDS_PATCHING == 'true' }}
+      shell: bash
+      run: |
+        IMAGE="$ORIGINAL_IMAGE"
+        PATCHED_IMAGE="${IMAGE}-patched"
+        
+        echo "Patching image: $IMAGE"
+        echo "Output image: $PATCHED_IMAGE"
+        
+        # Run Copa to patch the image
+        if copa patch \
+          --image "$IMAGE" \
+          --report trivy-results.json \
+          --tag "$PATCHED_IMAGE" \
+          --timeout "${{ inputs.copa_timeout }}"; then
+          
+          echo "✅ Patching completed successfully"
+          
+          # Push the patched image
+          docker push "$PATCHED_IMAGE"
+          
+          echo "patched-image=$PATCHED_IMAGE" >> $GITHUB_OUTPUT
+          echo "PATCHED_IMAGE=$PATCHED_IMAGE" >> $GITHUB_ENV
+          
+          echo "### 🔧 Patching Results" >> $GITHUB_STEP_SUMMARY
+          echo "**Original Image:** $IMAGE" >> $GITHUB_STEP_SUMMARY
+          echo "**Patched Image:** $PATCHED_IMAGE" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Image successfully patched and pushed" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ Patching failed"
+          echo "### 🔧 Patching Results" >> $GITHUB_STEP_SUMMARY
+          echo "**Original Image:** $IMAGE" >> $GITHUB_STEP_SUMMARY
+          echo "❌ Patching failed - using original image" >> $GITHUB_STEP_SUMMARY
+        fi
+
+    - name: Verify patched image
+      if: ${{ inputs.skip_vulnerability_scan != 'true' && env.NEEDS_PATCHING == 'true' && env.PATCHED_IMAGE != '' }}
+      shell: bash
+      run: |
+        echo "Verifying patched image: $PATCHED_IMAGE"
+        
+        # Scan the patched image
+        trivy image --format json --output trivy-patched-results.json "$PATCHED_IMAGE"
+        
+        # Compare results
+        ORIGINAL_COUNT=$HIGH_CRITICAL_COUNT
+        PATCHED_HIGH_CRITICAL=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH" or .Severity == "CRITICAL")] | length' trivy-patched-results.json 2>/dev/null || echo "0")
+        PATCHED_TOTAL=$(jq '[.Results[]?.Vulnerabilities[]?] | length' trivy-patched-results.json 2>/dev/null || echo "0")
+        
+        echo "### 🔍 Verification Results" >> $GITHUB_STEP_SUMMARY
+        echo "**Original High/Critical Count:** $ORIGINAL_COUNT" >> $GITHUB_STEP_SUMMARY
+        echo "**Patched High/Critical Count:** $PATCHED_HIGH_CRITICAL" >> $GITHUB_STEP_SUMMARY
+        echo "**Patched Total Count:** $PATCHED_TOTAL" >> $GITHUB_STEP_SUMMARY
+        
+        if [ "$PATCHED_HIGH_CRITICAL" -lt "$ORIGINAL_COUNT" ]; then
+          REDUCTION=$((ORIGINAL_COUNT - PATCHED_HIGH_CRITICAL))
+          echo "✅ **Success:** Reduced high/critical vulnerabilities by $REDUCTION" >> $GITHUB_STEP_SUMMARY
+        elif [ "$PATCHED_HIGH_CRITICAL" -eq "$ORIGINAL_COUNT" ]; then
+          echo "⚠️ **No Change:** High/critical vulnerability count unchanged" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ **Unexpected:** High/critical vulnerability count increased" >> $GITHUB_STEP_SUMMARY
+        fi
+
+    - name: Determine final image
+      id: determine-final-image
+      shell: bash
+      run: |
+        if [ "${{ inputs.skip_vulnerability_scan }}" == "true" ]; then
+          FINAL_IMAGE="$ORIGINAL_IMAGE"
+          echo "Vulnerability scanning skipped - using original image"
+        elif [ -n "$PATCHED_IMAGE" ]; then
+          FINAL_IMAGE="$PATCHED_IMAGE"
+          echo "Using patched image: $FINAL_IMAGE"
+        else
+          FINAL_IMAGE="$ORIGINAL_IMAGE"
+          echo "Using original image: $FINAL_IMAGE"
+        fi
+        
+        echo "final-image=$FINAL_IMAGE" >> $GITHUB_OUTPUT
+        echo "FINAL_IMAGE=$FINAL_IMAGE" >> $GITHUB_ENV
+        
+        echo "### 🚀 Final Deployment Image" >> $GITHUB_STEP_SUMMARY
+        echo "**Image:** $FINAL_IMAGE" >> $GITHUB_STEP_SUMMARY
+
+    - name: Upload vulnerability scan artifacts
+      uses: actions/upload-artifact@v3
+      if: ${{ inputs.skip_vulnerability_scan != 'true' }}
+      with:
+        name: vulnerability-scan-results-${{ github.run_id }}
+        path: |
+          trivy-results.json
+          trivy-results.sarif
+          trivy-patched-results.json
+        retention-days: 30
+        if-no-files-found: ignore
     
     - name: Helm Package
       shell: bash
