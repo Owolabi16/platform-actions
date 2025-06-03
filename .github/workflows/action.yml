@@ -89,10 +89,6 @@ jobs:
       packages: read
       contents: write
     needs: build_platform 
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJson(needs.setup.outputs.images ) }}
     steps:
       - name: Generate Trivy Report
         uses: aquasecurity/trivy-action@0.29.0
