@@ -266,7 +266,17 @@ runs:
       shell: bash
       run: |
         IMAGE="$ORIGINAL_IMAGE"
-        PATCHED_IMAGE="${IMAGE}-patched"
+        
+        # Create a valid patched tag by replacing the original tag with a patched version
+        if [[ "$IMAGE" == *":"* ]]; then
+          # Image has a tag, replace it
+          IMAGE_BASE="${IMAGE%:*}"
+          ORIGINAL_TAG="${IMAGE##*:}"
+          PATCHED_IMAGE="${IMAGE_BASE}:${ORIGINAL_TAG}-patched"
+        else
+          # Image has no tag (assumes latest), add patched suffix
+          PATCHED_IMAGE="${IMAGE}:latest-patched"
+        fi
         
         echo "Patching image: $IMAGE"
         echo "Output image: $PATCHED_IMAGE"
