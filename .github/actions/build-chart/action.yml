@@ -127,3 +127,12 @@ runs:
         cache-from: type=registry,ref=ghcr.io/${{ env.REPO_OWNER }}/cache:buildcache
         cache-to: type=registry,ref=ghcr.io/${{ env.REPO_OWNER }}/cache:buildcache,mode=max
         target: ${{ inputs.build-target }}
+
+    - name: Set primary image tag
+      id: primary-tag
+      shell: bash
+      run: |
+        # Extract the first tag from meta output for use as primary reference
+        PRIMARY_TAG=$(echo "${{ steps.meta.outputs.tags }}" | head -n1)
+        echo "primary_tag=$PRIMARY_TAG" >> $GITHUB_OUTPUT
+
