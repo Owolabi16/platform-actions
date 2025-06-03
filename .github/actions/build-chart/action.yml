@@ -2,6 +2,10 @@ name: 'Build, Push Helm Chart & Docker Image'
 description: 'Composite action to build and push Helm charts and Docker images with vulnerability scanning'
 
 inputs:
+Add commentMore actions
+  chart_dir:
+    description: 'Directory containing the chart to build'
+    required: true
   chart_tag:
     description: 'Force Version Override?'
     required: false
