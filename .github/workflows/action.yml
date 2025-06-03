@@ -82,3 +82,54 @@ jobs:
           docker-hub-user: owolabialiu
           docker-hub-token: ${{ secrets.DOCKER_HUB_TOKEN }}
           pat-token: ${{ secrets.PAT_TOKEN }}
+
+  patch:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: read
+      contents: write
+    needs: build_platform 
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.setup.outputs.images ) }}
+    steps:
+      - name: Generate Trivy Report
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          scan-type: "image"
+          format: "json"
+          output: "report.json"
+          ignore-unfixed: true
+          vuln-type: "os"
+          image-ref: ${{ needs.build_platform.outputs.docker-repo }}:${{ needs.build_platform.outputs.docker-tag }}
+
+      - name: Check vulnerability count
+        id: vuln_count
+        run: |
+          report_file="report.json"
+          vuln_count=$(jq 'if .Results then [.Results[] | select(.Class=="os-pkgs" and .Vulnerabilities!=null) | .Vulnerabilities[]] | length else 0 end' "$report_file")
+          echo "vuln_count=$vuln_count" >> $GITHUB_OUTPUT
+
+      - name: Run copa action
+        if: steps.vuln_count.outputs.vuln_count != '0'
+        id: copa
+        uses: project-copacetic/copa-action@v1.2.1
+        with:
+          image: ${{ needs.build_platform.outputs.docker-repo }}:${{ needs.build_platform.outputs.docker-tag }}
+          image-report: "report.json"
+          patched-tag: ${{ matrix.next_patch_tag }}
+
+      - name: Login to GHCR
+        if: steps.copa.conclusion == 'success'
+        id: login
+        uses: docker/login-action@v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      - name: Push patched image
+        if: steps.login.conclusion == 'success'
+        run: |
+          docker push ${{ steps.copa.outputs.patched-image }}
