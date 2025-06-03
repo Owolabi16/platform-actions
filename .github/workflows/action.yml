@@ -133,7 +133,7 @@ jobs:
         with:
           image: ${{ steps.image-info.outputs.image_ref }}
           image-report: "report.json"
-          patched-tag: ghcr.io/${{ github.repository_owner }}/platform-actions:patched-${{ github.sha }}
+          patched-tag: v${{ inputs.release_version }}-patched
 
       - name: Login to GHCR
         if: steps.copa.conclusion == 'success'
