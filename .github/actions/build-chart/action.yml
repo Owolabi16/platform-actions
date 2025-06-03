@@ -1,201 +1,76 @@
-name: 'Build, Push Helm Chart & Docker Image'
-description: 'Composite action to build and push Helm charts and Docker images with vulnerability scanning'
-
+name: Build, Push Helm Chart & build image
+description: 'Builds and packages a Helm chart'
 inputs:
-  chart_dir:
-    description: 'Directory containing the chart to build'
-    required: true
   chart_tag:
     description: 'Force Version Override?'
     required: false
-    default: ''
+    type: string
   chart_overwrite:
     description: 'Force Chart Overwrite?'
-    required: false
-    default: 'false'
+    required: true
+    type: boolean
   git_branch:
     description: 'Git branch to checkout'
     required: false
-    default: ''
+    type: string
   pre_build_script:
     description: 'Pre-build script to run'
     required: false
-    default: ''
+    type: string
   is_lib_chart:
     description: 'Is this a library chart?'
     required: false
-    default: 'false'
+    type: boolean
   custom-image-name:
     description: 'Custom image name'
     required: false
-    default: ''
+    type: string
   build-target:
     description: 'Docker build target'
     required: false
-    default: ''
+    type: string
   docker-build-args:
     description: 'Docker build arguments'
     required: false
-    default: ''
+    type: string
   dockerfile-path:
     description: 'Path to Dockerfile'
     required: false
-    default: 'Dockerfile'
+    type: string
   docker-arch:
     description: 'Docker architectures to build'
     required: false
-    default: 'linux/amd64'
+    type: string
   docker-hub-user:
     description: 'Docker Hub username'
-    required: true
-    default: 'owolabialiu'
+    required: false
+    default: 'occasio'
   docker-hub-token:
     description: 'Docker Hub token'
     required: true
   pat-token:
-    description: 'GitHub PAT token'
+    description: 'GitHub Personal Access Token'
     required: true
-  chart-dir:
-    description: 'Helm chart directory'
-    required: false
-    default: '.github/workflows/charts'
-  registry:
-    description: 'Container registry'
-    required: false
-    default: 'ghcr.io'
-  enable-vulnerability-scanning:
-    description: 'Enable vulnerability scanning and patching'
-    required: false
-    default: 'true'
 
 outputs:
-  chart-version:
-    description: 'The version of the built chart'
-    value: ${{ steps.extract-version.outputs.chart-version }}
   docker-tag:
-    description: 'The Docker image tag'
+    description: 'Docker tag'
     value: ${{ steps.meta.outputs.version }}
   docker-repo:
-    description: 'The Docker repository'
+    description: 'Docker repository'
     value: ${{ steps.docker-repo.outputs.DOCKER_REPOSITORY }}
-  patched-image:
-    description: 'The patched Docker image (if vulnerability scanning enabled)'
-    value: ${{ steps.copa.outputs.patched-image }}
 
 runs:
-  using: 'composite'
+  using: "composite"
   steps:
     - name: Login to Docker Hub
       uses: docker/login-action@v3
       with:
         username: ${{ inputs.docker-hub-user }}
         password: ${{ inputs.docker-hub-token }}
+        logout: false
 
-    # GitHub Container Registry Login
-    - name: Login to GitHub Container Registry
-      uses: docker/login-action@v3
-      with:
-        registry: ${{ inputs.registry }}
-        username: ${{ github.actor }}
-        password: ${{ inputs.pat-token }}
-
-    # Pre-build script
-    - name: Run Pre-Build User-defined script
-      if: ${{ inputs.pre_build_script != '' }}
-      shell: bash
-      run: bash -c '${{ inputs.pre_build_script }}'
-
-    # Helm Chart Build Steps
-    - name: Generate Docs
-      continue-on-error: true
-      uses: docker://jnorwood/helm-docs:v1.11.0
-      with:
-        entrypoint: helm-docs
-        args: -g $(basename ${{ inputs.chart-dir }})
-
-    - name: Install Dependencies
-      shell: bash
-      run: helm dep build ${{ inputs.chart-dir }} --skip-refresh
-
-    - name: Helm Lint
-      shell: bash
-      run: helm lint ${{ inputs.chart-dir }}
-
-    - name: Generate template.yaml
-      if: ${{ inputs.is_lib_chart != 'true' }}
-      shell: bash
-      run: |
-        helm template ${{ inputs.chart-dir }} > ${{ inputs.chart-dir }}/template.yaml
-        cat ${{ inputs.chart-dir }}/template.yaml
-
-    - name: KubeVal Kubernetes Objects
-      if: ${{ inputs.is_lib_chart != 'true' }}
-      shell: bash
-      run: |
-        docker run --rm -v $(pwd)/${{ inputs.chart-dir }}:/data \
-          cytopia/kubeval \
-          template.yaml \
-          --output=stdout \
-          --strict \
-          --ignore-missing-schemas
-
-    - name: Clean up template file
-      if: ${{ inputs.is_lib_chart != 'true' }}
-      shell: bash
-      run: rm -f ${{ inputs.chart-dir }}/template.yaml
-
-    - name: Get Chart Name from Chart.yaml
-      shell: bash
-      run: echo "CHART_NAME=$(yq eval .name ${{ inputs.chart-dir }}/Chart.yaml)" >> $GITHUB_ENV
-
-    - name: Get Chart Tag/version from Chart.yaml
-      id: extract-version
-      shell: bash
-      run: |
-        # Always get version from Chart.yaml as fallback
-        CHART_VERSION=$(yq eval .version ${{ inputs.chart-dir }}/Chart.yaml)
-        
-        # Only use inputs.chart_tag if it's explicitly provided and not "false"
-        if [ -n "${{ inputs.chart_tag }}" ] && [ "${{ inputs.chart_tag }}" != "false" ]; then
-          VERSION="${{ inputs.chart_tag }}"
-        else
-          VERSION="$CHART_VERSION"
-        fi
-        
-        # Validate that we have a proper semantic version
-        if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
-          echo "Error: '$VERSION' is not a valid semantic version"
-          exit 1
-        fi
-        
-        echo "Using chart version: $VERSION"
-        echo "CHART_TAG=$VERSION" >> $GITHUB_ENV
-        echo "chart-version=$VERSION" >> $GITHUB_OUTPUT
-
-    - name: Chart Registry Overwrite Protection
-      if: ${{ inputs.chart_overwrite == 'false' }}
-      shell: bash
-      run: |
-        if helm pull oci://${{ inputs.registry }}/chart/${{ env.CHART_NAME }} --version ${{ env.CHART_TAG }} 2>/dev/null; then
-          echo "Chart ${{ env.CHART_NAME }}:${{ env.CHART_TAG }} already exists and overwrite is disabled."
-          exit 1
-        fi
-
-    - name: Release Helm Chart
-      uses: appany/helm-oci-chart-releaser@v0.4.0
-      with:
-        name: ${{ env.CHART_NAME }}
-        repository: owolabi16/charts
-        tag: ${{ env.CHART_TAG }}
-        path: ${{ inputs.chart-dir }}
-        registry: ${{ inputs.registry }}
-        registry_username: owolabi16
-        registry_password: ${{ inputs.pat-token }}
-      env:
-        HELM_EXPERIMENTAL_OCI: 1
-
-    # Docker Image Build Steps
-    - name: Set Docker Repository Variable
+  - name: Set Docker Repository Variable
       shell: bash
       run: echo "DOCKER_REPOSITORY=${{ inputs.docker-hub-user }}/$( echo ${{ github.repository }} | awk -F '/' '{print $2}' | awk '{print tolower($0)}' )" >> $GITHUB_ENV
 
@@ -209,18 +84,24 @@ runs:
       run: echo "REPO_OWNER=$( echo ${{ github.repository_owner }} | awk '{print tolower($0)}' )" >> $GITHUB_ENV
 
     - name: Set up QEMU
-      uses: docker/setup-qemu-action@v3
+      uses: docker/setup-qemu-action@v2
 
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      uses: docker/setup-buildx-action@v2
+
+    - name: Login to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ inputs.pat-token }}
+        logout: false
 
     - name: Docker meta
       id: meta
-      uses: docker/metadata-action@v5
+      uses: docker/metadata-action@v4
       with:
-        images: |
-          ${{ inputs.custom-image-name != '' && format('{0}/{1}', inputs.docker-hub-user, inputs.custom-image-name) || env.DOCKER_REPOSITORY }}
-          ${{ inputs.registry }}/${{ env.REPO_OWNER }}/${{ inputs.custom-image-name != '' && inputs.custom-image-name || github.event.repository.name }}
+        images: ${{ inputs.docker-hub-user }}/platform-actions
         tags: |
           type=schedule
           type=ref,event=branch
@@ -230,189 +111,19 @@ runs:
           type=semver,pattern={{major}},suffix=${{ inputs.build-target != '' && format('-{0}', inputs.build-target) || ''}}
           type=sha
           type=raw,value=${{ inputs.build-target }}
-
+         
     - name: Build and push
       id: build
-      uses: docker/build-push-action@v5
+      uses: docker/build-push-action@v4
       with:
         context: .
         push: true
-        build-args: ${{ inputs.docker-build-args }}
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         file: ${{ inputs.dockerfile-path }}
         platforms: ${{ inputs.docker-arch }}
         pull: true
         no-cache: false
-        cache-from: type=registry,ref=${{ inputs.registry }}/${{ env.REPO_OWNER }}/cache:buildcache
-        cache-to: type=registry,ref=${{ inputs.registry }}/${{ env.REPO_OWNER }}/cache:buildcache,mode=max
+        cache-from: type=registry,ref=ghcr.io/${{ env.REPO_OWNER }}/cache:buildcache
+        cache-to: type=registry,ref=ghcr.io/${{ env.REPO_OWNER }}/cache:buildcache,mode=max
         target: ${{ inputs.build-target }}
-
-    # Vulnerability Scanning Steps (Optional)
-    - name: Generate Trivy Report
-      if: ${{ inputs.enable-vulnerability-scanning == 'true' }}
-      uses: aquasecurity/trivy-action@0.29.0
-      with:
-        scan-type: "image"
-        format: "json"
-        output: "report.json"
-        ignore-unfixed: true
-        vuln-type: "os"
-        image-ref: ${{ steps.docker-repo.outputs.DOCKER_REPOSITORY }}:${{ steps.meta.outputs.version }}
-
-    - name: Check vulnerability count
-      if: ${{ inputs.enable-vulnerability-scanning == 'true' }}
-      id: vuln_count
-      shell: bash
-      run: |
-        report_file="report.json"
-        vuln_count=$(jq 'if .Results then [.Results[] | select(.Class=="os-pkgs" and .Vulnerabilities!=null) | .Vulnerabilities[]] | length else 0 end' "$report_file")
-        echo "vuln_count=$vuln_count" >> $GITHUB_OUTPUT
-        echo "Found $vuln_count vulnerabilities"
-
-    - name: Run copa action
-      if: ${{ inputs.enable-vulnerability-scanning == 'true' && steps.vuln_count.outputs.vuln_count != '0' }}
-      id: copa
-      uses: project-copacetic/copa-action@v1.2.1
-      with:
-        image: ${{ steps.docker-repo.outputs.DOCKER_REPOSITORY }}:${{ steps.meta.outputs.version }}
-        image-report: "report.json"
-        patched-tag: "patched-${{ steps.meta.outputs.version }}"
-
-    - name: Push patched image
-      if: ${{ inputs.enable-vulnerability-scanning == 'true' && steps.copa.conclusion == 'success' }}
-      shell: bash
-      run: |
-        docker push ${{ steps.copa.outputs.patched-image }}
-        echo "Patched image pushed: ${{ steps.copa.outputs.patched-image }}"
-
-
-# name: Build, Push Helm Chart & build image
-# description: 'Builds and packages a Helm chart'
-# inputs:
-#   chart_tag:
-#     description: 'Force Version Override?'
-#     required: false
-#     type: string
-#   chart_overwrite:
-#     description: 'Force Chart Overwrite?'
-#     required: true
-#     type: boolean
-#   git_branch:
-#     description: 'Git branch to checkout'
-#     required: false
-#     type: string
-#   pre_build_script:
-#     description: 'Pre-build script to run'
-#     required: false
-#     type: string
-#   is_lib_chart:
-#     description: 'Is this a library chart?'
-#     required: false
-#     type: boolean
-#   custom-image-name:
-#     description: 'Custom image name'
-#     required: false
-#     type: string
-#   build-target:
-#     description: 'Docker build target'
-#     required: false
-#     type: string
-#   docker-build-args:
-#     description: 'Docker build arguments'
-#     required: false
-#     type: string
-#   dockerfile-path:
-#     description: 'Path to Dockerfile'
-#     required: false
-#     type: string
-#   docker-arch:
-#     description: 'Docker architectures to build'
-#     required: false
-#     type: string
-#   docker-hub-user:
-#     description: 'Docker Hub username'
-#     required: false
-#     default: 'occasio'
-#   docker-hub-token:
-#     description: 'Docker Hub token'
-#     required: true
-#   pat-token:
-#     description: 'GitHub Personal Access Token'
-#     required: true
-
-# outputs:
-#   docker-tag:
-#     description: 'Docker tag'
-#     value: ${{ steps.meta.outputs.version }}
-#   docker-repo:
-#     description: 'Docker repository'
-#     value: ${{ steps.docker-repo.outputs.DOCKER_REPOSITORY }}
-
-# runs:
-#   using: "composite"
-#   steps:
-#     - name: Login to Docker Hub
-#       uses: docker/login-action@v3
-#       with:
-#         username: ${{ inputs.docker-hub-user }}
-#         password: ${{ inputs.docker-hub-token }}
-#         logout: false
-
-#   - name: Set Docker Repository Variable
-#       shell: bash
-#       run: echo "DOCKER_REPOSITORY=${{ inputs.docker-hub-user }}/$( echo ${{ github.repository }} | awk -F '/' '{print $2}' | awk '{print tolower($0)}' )" >> $GITHUB_ENV
-
-#     - name: Set Docker Repository Output
-#       id: docker-repo
-#       shell: bash
-#       run: echo "DOCKER_REPOSITORY=${{ inputs.docker-hub-user }}/$( echo ${{ github.repository }} | awk -F '/' '{print $2}' | awk '{print tolower($0)}' )" >> $GITHUB_OUTPUT
-
-#     - name: Set Repository Owner
-#       shell: bash
-#       run: echo "REPO_OWNER=$( echo ${{ github.repository_owner }} | awk '{print tolower($0)}' )" >> $GITHUB_ENV
-
-#     - name: Set up QEMU
-#       uses: docker/setup-qemu-action@v2
-
-#     - name: Set up Docker Buildx
-#       uses: docker/setup-buildx-action@v2
-
-#     - name: Login to GitHub Container Registry
-#       uses: docker/login-action@v3
-#       with:
-#         registry: ghcr.io
-#         username: ${{ github.actor }}
-#         password: ${{ inputs.pat-token }}
-#         logout: false
-
-#     - name: Docker meta
-#       id: meta
-#       uses: docker/metadata-action@v4
-#       with:
-#         images: ${{ inputs.docker-hub-user }}/platform-actions
-#         tags: |
-#           type=schedule
-#           type=ref,event=branch
-#           type=ref,event=pr,suffix=${{ inputs.build-target != '' && format('-{0}', inputs.build-target) || ''}}
-#           type=semver,pattern={{version}},suffix=${{ inputs.build-target != '' && format('-{0}', inputs.build-target) || ''}}
-#           type=semver,pattern={{major}}.{{minor}},suffix=${{ inputs.build-target != '' && format('-{0}', inputs.build-target) || ''}}
-#           type=semver,pattern={{major}},suffix=${{ inputs.build-target != '' && format('-{0}', inputs.build-target) || ''}}
-#           type=sha
-#           type=raw,value=${{ inputs.build-target }}
-         
-#     - name: Build and push
-#       id: build
-#       uses: docker/build-push-action@v4
-#       with:
-#         context: .
-#         push: true
-#         tags: ${{ steps.meta.outputs.tags }}
-#         labels: ${{ steps.meta.outputs.labels }}
-#         file: ${{ inputs.dockerfile-path }}
-#         platforms: ${{ inputs.docker-arch }}
-#         pull: true
-#         no-cache: false
-#         cache-from: type=registry,ref=ghcr.io/${{ env.REPO_OWNER }}/cache:buildcache
-#         cache-to: type=registry,ref=ghcr.io/${{ env.REPO_OWNER }}/cache:buildcache,mode=max
-#         target: ${{ inputs.build-target }}
