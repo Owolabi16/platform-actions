@@ -71,8 +71,8 @@ runs:
         logout: false
 
     - name: Set Docker Repository Variable
-        shell: bash
-        run: echo "DOCKER_REPOSITORY=${{ inputs.docker-hub-user }}/$( echo ${{ github.repository }} | awk -F '/' '{print $2}' | awk '{print tolower($0)}' )" >> $GITHUB_ENV
+      shell: bash
+      run: echo "DOCKER_REPOSITORY=${{ inputs.docker-hub-user }}/$( echo ${{ github.repository }} | awk -F '/' '{print $2}' | awk '{print tolower($0)}' )" >> $GITHUB_ENV
 
     - name: Set Docker Repository Output
       id: docker-repo
