@@ -162,22 +162,66 @@ jobs:
           aws-region: "us-east-1"
           role-to-assume: "arn:aws:iam::908027403160:role/aws-inspector"
 
-      - name: Scan built image with Inspector
+      # Login to Docker Hub to ensure Inspector can pull the image
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3.3.0
+        with:
+          username: owolabialiu
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+      # Determine which image to scan (patched if available, otherwise original)
+      - name: Determine image to scan
+        id: scan-image
+        run: |
+          if [[ "${{ needs.copacetic-vulnerability-scanning.outputs.vuln-count }}" != "0" && "${{ needs.copacetic-vulnerability-scanning.outputs.patched-image }}" != "" ]]; then
+            echo "image_to_scan=${{ needs.copacetic-vulnerability-scanning.outputs.patched-image }}" >> $GITHUB_OUTPUT
+            echo "Scanning patched image: ${{ needs.copacetic-vulnerability-scanning.outputs.patched-image }}"
+          else
+            echo "image_to_scan=${{ needs.build_platform.outputs.image-ref }}" >> $GITHUB_OUTPUT
+            echo "Scanning original image: ${{ needs.build_platform.outputs.image-ref }}"
+          fi
+
+      # Pull the image locally so Inspector can access it
+      - name: Pull image locally
+        run: |
+          docker pull ${{ steps.scan-image.outputs.image_to_scan }}
+
+      - name: Scan image with Inspector
         uses: aws-actions/vulnerability-scan-github-action-for-amazon-inspector@v1
         id: inspector
         with:
-          image: ${{ steps.image-info.outputs.image_ref }}        
           artifact_type: 'container'
-          artifact_path: 'app:latest' # make sure this matches the image you built
+          artifact_path: ${{ steps.scan-image.outputs.image_to_scan }}
           critical_threshold: 1
           high_threshold: 1
           medium_threshold: 1
           low_threshold: 1
           other_threshold: 1
-          # set additional arguments as needed
+          display_vulnerability_findings: enabled
+          output_sbom_path: ./sbom_output.json
+          output_inspector_scan_path: ./inspector_scan_output.json
+          output_inspector_scan_path_csv: ./inspector_scan_output.csv
+          output_inspector_scan_path_markdown: ./inspector_scan_output.md
 
-      - name: Fail job if vulnerability threshold is exceeded
-        run: exit ${{ steps.inspector.outputs.vulnerability_threshold_exceeded }}
+      - name: Upload Inspector scan results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: inspector-scan-results
+          path: |
+            ./sbom_output.json
+            ./inspector_scan_output.json
+            ./inspector_scan_output.csv
+            ./inspector_scan_output.md
+
+      - name: Check vulnerability threshold
+        run: |
+          if [[ "${{ steps.inspector.outputs.vulnerability_threshold_exceeded }}" == "true" ]]; then
+            echo "❌ Vulnerability threshold exceeded!"
+            exit 1
+          else
+            echo "✅ Vulnerability scan passed!"
+          fi
 
       - name: Push scaned image to Docker Hub
         if: steps.inspector.outputs.vulnerability_threshold_exceeded == 'success'
