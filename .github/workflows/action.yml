@@ -23,7 +23,6 @@ jobs:
   execute-workflow:
     runs-on: ubuntu-latest
     permissions:
-      id-token: write
       contents: write
       packages: read
       pull-requests: write
@@ -150,6 +149,7 @@ jobs:
   aws_inspectector_scan:
     runs-on: ubuntu-latest
     permissions:
+      id-token: write
       packages: read
       contents: write
     needs: copacetic-vulnerability-scanning
