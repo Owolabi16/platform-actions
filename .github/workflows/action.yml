@@ -23,6 +23,7 @@ jobs:
   execute-workflow:
     runs-on: ubuntu-latest
     permissions:
+      id-token: write
       contents: write
       packages: read
       pull-requests: write
