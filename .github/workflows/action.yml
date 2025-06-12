@@ -151,7 +151,7 @@ jobs:
     permissions:
       packages: read
       contents: write
-    needs: build_platform
+    needs: copacetic-vulnerability-scanning
     if: ${{ inputs.environment == 'rc-next' }}
     steps:
       # setup your AWS credentials
