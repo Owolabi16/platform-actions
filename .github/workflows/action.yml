@@ -72,6 +72,7 @@ jobs:
       docker-tag: ${{ steps.build-chart.outputs.docker-tag }}
       docker-repo: ${{ steps.build-chart.outputs.docker-repo }}
       primary-image: ${{ steps.build-chart.outputs.primary-image }}
+      image-ref: ${{ steps.extract-image-info.outputs.image_ref }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -88,6 +89,19 @@ jobs:
           docker-hub-token: ${{ secrets.DOCKER_HUB_TOKEN }}
           pat-token: ${{ secrets.PAT_TOKEN }}
 
+      - name: Extract image info
+        id: extract-image-info
+        run: |
+          # Extract the first tag from the build output
+          DOCKER_REPO="${{ steps.build-chart.outputs.docker-repo }}"
+          DOCKER_TAGS="${{ steps.build-chart.outputs.docker-tag }}"
+          
+          # Get the first tag (assuming it's the primary one)
+          FIRST_TAG=$(echo "$DOCKER_TAGS" | head -n1)
+          
+          echo "Using image: $DOCKER_REPO:$FIRST_TAG"
+          echo "image_ref=$DOCKER_REPO:$FIRST_TAG" >> $GITHUB_OUTPUT
+
   copacetic-vulnerability-scanning:
     runs-on: ubuntu-latest
     permissions:
@@ -95,20 +109,10 @@ jobs:
       contents: write
     needs: build_platform
     if: ${{ inputs.environment == 'rc-next' }}
+    outputs:
+      patched-image: ${{ steps.copa.outputs.patched-image }}
+      vuln-count: ${{ steps.vuln_count.outputs.vuln_count }}
     steps:
-      - name: Extract image info
-        id: image-info
-        run: |
-          # Extract the first tag from the build output
-          DOCKER_REPO="${{ needs.build_platform.outputs.docker-repo }}"
-          DOCKER_TAGS="${{ needs.build_platform.outputs.docker-tag }}"
-          
-          # Get the first tag (assuming it's the primary one)
-          FIRST_TAG=$(echo "$DOCKER_TAGS" | head -n1)
-          
-          echo "Using image: $DOCKER_REPO:$FIRST_TAG"
-          echo "image_ref=$DOCKER_REPO:$FIRST_TAG" >> $GITHUB_OUTPUT
-          
       - name: Generate Trivy Report
         uses: aquasecurity/trivy-action@0.29.0
         with:
@@ -117,7 +121,7 @@ jobs:
           output: "report.json"
           ignore-unfixed: true
           vuln-type: "os"
-          image-ref: ${{ steps.image-info.outputs.image_ref }}
+          image-ref: ${{ needs.build_platform.outputs.image-ref }}
 
       - name: Check vulnerability count
         id: vuln_count
@@ -131,7 +135,7 @@ jobs:
         id: copa
         uses: project-copacetic/copa-action@v1.2.1
         with:
-          image: ${{ steps.image-info.outputs.image_ref }}
+          image: ${{ needs.build_platform.outputs.image-ref }}
           image-report: "report.json"
           patched-tag: v${{ inputs.release_version }}-patched
   
@@ -146,16 +150,16 @@ jobs:
         if: steps.copa.conclusion == 'success'
         run: docker push ${{ steps.copa.outputs.patched-image }}
 
-  aws_inspectector_scan:
+  aws_inspector_scan:
     runs-on: ubuntu-latest
     permissions:
       id-token: write
       packages: read
       contents: write
-    needs: copacetic-vulnerability-scanning
+    needs: [build_platform, copacetic-vulnerability-scanning]
     if: ${{ inputs.environment == 'rc-next' }}
     steps:
-      # setup your AWS credentials
+      # Setup your AWS credentials
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -222,9 +226,3 @@ jobs:
           else
             echo "✅ Vulnerability scan passed!"
           fi
-
-      - name: Push scaned image to Docker Hub
-        if: steps.inspector.outputs.vulnerability_threshold_exceeded == 'success'
-        run: docker push ${{ steps.copa.outputs.patched-image }}        
-
-  
