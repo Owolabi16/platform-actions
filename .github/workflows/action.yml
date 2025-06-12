@@ -145,3 +145,41 @@ jobs:
       - name: Push patched image to Docker Hub
         if: steps.copa.conclusion == 'success'
         run: docker push ${{ steps.copa.outputs.patched-image }}
+
+  aws_inspectector_scan:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: read
+      contents: write
+    needs: build_platform
+    if: ${{ inputs.environment == 'rc-next' }}
+    steps:
+      # setup your AWS credentials
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: "us-east-1"
+          role-to-assume: "arn:aws:iam::908027403160:role/aws-inspector"
+
+      - name: Scan built image with Inspector
+        uses: aws-actions/vulnerability-scan-github-action-for-amazon-inspector@v1
+        id: inspector
+        with:
+          image: ${{ steps.image-info.outputs.image_ref }}        
+          artifact_type: 'container'
+          artifact_path: 'app:latest' # make sure this matches the image you built
+          critical_threshold: 1
+          high_threshold: 1
+          medium_threshold: 1
+          low_threshold: 1
+          other_threshold: 1
+          # set additional arguments as needed
+
+      - name: Fail job if vulnerability threshold is exceeded
+        run: exit ${{ steps.inspector.outputs.vulnerability_threshold_exceeded }}
+
+      - name: Push scaned image to Docker Hub
+        if: steps.inspector.outputs.vulnerability_threshold_exceeded == 'success'
+        run: docker push ${{ steps.copa.outputs.patched-image }}        
+
+  
