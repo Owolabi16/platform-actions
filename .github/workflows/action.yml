@@ -63,7 +63,7 @@ jobs:
           github_token: ${{ secrets.PAT_TOKEN }}
           github_actor: ${{ github.actor }}
           chart_version: ${{ inputs.environment == 'rc-next' && steps.rc-next-workflow.outputs.platform_version || steps.staging-workflow.outputs.platform_version }}
-          
+
   build_platform:
     needs: execute-workflow
     if: ${{ inputs.environment == 'rc-next' }}
@@ -92,15 +92,23 @@ jobs:
       - name: Extract image info
         id: extract-image-info
         run: |
-          # Extract the first tag from the build output
           DOCKER_REPO="${{ steps.build-chart.outputs.docker-repo }}"
           DOCKER_TAGS="${{ steps.build-chart.outputs.docker-tag }}"
           
-          # Get the first tag (assuming it's the primary one)
-          FIRST_TAG=$(echo "$DOCKER_TAGS" | head -n1)
+          echo "Docker repo: $DOCKER_REPO"
+          echo "Docker tags: $DOCKER_TAGS"
           
-          echo "Using image: $DOCKER_REPO:$FIRST_TAG"
-          echo "image_ref=$DOCKER_REPO:$FIRST_TAG" >> $GITHUB_OUTPUT
+          if [[ -z "$DOCKER_REPO" || -z "$DOCKER_TAGS" ]]; then
+            echo "Error: Missing docker repo or tags from build step"
+            exit 1
+          fi
+          
+          # Get the first tag
+          FIRST_TAG=$(echo "$DOCKER_TAGS" | head -n1)
+          IMAGE_REF="$DOCKER_REPO:$FIRST_TAG"
+          
+          echo "Built image reference: $IMAGE_REF"
+          echo "image_ref=$IMAGE_REF" >> $GITHUB_OUTPUT
 
   copacetic-vulnerability-scanning:
     runs-on: ubuntu-latest
@@ -112,13 +120,22 @@ jobs:
     outputs:
       patched-image: ${{ steps.copa.outputs.patched-image }}
       vuln-count: ${{ steps.vuln_count.outputs.vuln_count }}
+      requires-patching: ${{ steps.vuln_count.outputs.vuln_count != '0' }}
+      patching-success: ${{ steps.copa.conclusion == 'success' }}
+      final-image: ${{ steps.determine-final-image.outputs.final_image }}
     steps:
-      - name: Generate Trivy Report
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3.3.0
+        with:
+          username: owolabialiu
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+      - name: Generate Trivy Report for Built Image
         uses: aquasecurity/trivy-action@0.29.0
         with:
           scan-type: "image"
           format: "json"
-          output: "report.json"
+          output: "trivy-report.json"
           ignore-unfixed: true
           vuln-type: "os"
           image-ref: ${{ needs.build_platform.outputs.image-ref }}
@@ -126,31 +143,62 @@ jobs:
       - name: Check vulnerability count
         id: vuln_count
         run: |
-          report_file="report.json"
-          vuln_count=$(jq 'if .Results then [.Results[] | select(.Class=="os-pkgs" and .Vulnerabilities!=null) | .Vulnerabilities[]] | length else 0 end' "$report_file")
+          if [[ ! -f "trivy-report.json" ]]; then
+            echo "Error: Trivy report not found"
+            exit 1
+          fi
+          
+          vuln_count=$(jq 'if .Results then [.Results[] | select(.Class=="os-pkgs" and .Vulnerabilities!=null) | .Vulnerabilities[]] | length else 0 end' "trivy-report.json")
+          echo "Found $vuln_count vulnerabilities in built image"
           echo "vuln_count=$vuln_count" >> $GITHUB_OUTPUT
 
-      - name: Run copa action
+      - name: Run Copa patching
         if: steps.vuln_count.outputs.vuln_count != '0'
         id: copa
         uses: project-copacetic/copa-action@v1.2.1
         with:
           image: ${{ needs.build_platform.outputs.image-ref }}
-          image-report: "report.json"
+          image-report: "trivy-report.json"
           patched-tag: v${{ inputs.release_version }}-patched
-  
-      - name: Login to Docker Hub for patched image
-        if: steps.copa.conclusion == 'success'
-        uses: docker/login-action@v3.3.0
-        with:
-          username: owolabialiu
-          password: ${{ secrets.DOCKER_HUB_TOKEN }}
-      
-      - name: Push patched image to Docker Hub
-        if: steps.copa.conclusion == 'success'
-        run: docker push ${{ steps.copa.outputs.patched-image }}
 
-  aws_inspector_scan:
+      - name: Determine final image for Inspector scan
+        id: determine-final-image
+        run: |
+          ORIGINAL_IMAGE="${{ needs.build_platform.outputs.image-ref }}"
+          VULN_COUNT="${{ steps.vuln_count.outputs.vuln_count }}"
+          PATCHED_IMAGE="${{ steps.copa.outputs.patched-image }}"
+          COPA_SUCCESS="${{ steps.copa.conclusion }}"
+          
+          echo "Original image: $ORIGINAL_IMAGE"
+          echo "Vulnerability count: $VULN_COUNT"
+          echo "Patched image: $PATCHED_IMAGE"
+          echo "Copa success: $COPA_SUCCESS"
+          
+          # Logic: If vulnerabilities found and Copa succeeded, use patched image
+          # Otherwise use original image
+          if [[ "$VULN_COUNT" != "0" && "$COPA_SUCCESS" == "success" && "$PATCHED_IMAGE" != "" ]]; then
+            FINAL_IMAGE="$PATCHED_IMAGE"
+            echo "✅ Using patched image for Inspector scan: $FINAL_IMAGE"
+          else
+            FINAL_IMAGE="$ORIGINAL_IMAGE"
+            if [[ "$VULN_COUNT" == "0" ]]; then
+              echo "✅ No vulnerabilities found, using original image: $FINAL_IMAGE"
+            else
+              echo "⚠️ Patching failed or not available, using original image: $FINAL_IMAGE"
+            fi
+          fi
+          
+          echo "final_image=$FINAL_IMAGE" >> $GITHUB_OUTPUT
+
+      - name: Upload Trivy scan results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-scan-results-${{ inputs.release_version }}
+          path: |
+            ./trivy-report.json
+
+  aws-inspector-scan:
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -159,43 +207,36 @@ jobs:
     needs: [build_platform, copacetic-vulnerability-scanning]
     if: ${{ inputs.environment == 'rc-next' }}
     steps:
-      # Setup your AWS credentials
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: "us-east-1"
           role-to-assume: "arn:aws:iam::908027403160:role/aws-inspector"
 
-      # Login to Docker Hub to ensure Inspector can pull the image
       - name: Login to Docker Hub
         uses: docker/login-action@v3.3.0
         with:
           username: owolabialiu
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
 
-      # Determine which image to scan (patched if available, otherwise original)
-      - name: Determine image to scan
-        id: scan-image
+      - name: Pull image for Inspector scan
         run: |
-          if [[ "${{ needs.copacetic-vulnerability-scanning.outputs.vuln-count }}" != "0" && "${{ needs.copacetic-vulnerability-scanning.outputs.patched-image }}" != "" ]]; then
-            echo "image_to_scan=${{ needs.copacetic-vulnerability-scanning.outputs.patched-image }}" >> $GITHUB_OUTPUT
-            echo "Scanning patched image: ${{ needs.copacetic-vulnerability-scanning.outputs.patched-image }}"
-          else
-            echo "image_to_scan=${{ needs.build_platform.outputs.image-ref }}" >> $GITHUB_OUTPUT
-            echo "Scanning original image: ${{ needs.build_platform.outputs.image-ref }}"
+          SCAN_IMAGE="${{ needs.copacetic-vulnerability-scanning.outputs.final-image }}"
+          echo "🔍 Pulling image for AWS Inspector scan: $SCAN_IMAGE"
+          
+          if [[ -z "$SCAN_IMAGE" ]]; then
+            echo "❌ Error: No image specified for scanning"
+            exit 1
           fi
+          
+          docker pull "$SCAN_IMAGE"
 
-      # Pull the image locally so Inspector can access it
-      - name: Pull image locally
-        run: |
-          docker pull ${{ steps.scan-image.outputs.image_to_scan }}
-
-      - name: Scan image with Inspector
+      - name: Run AWS Inspector scan
         uses: aws-actions/vulnerability-scan-github-action-for-amazon-inspector@v1
         id: inspector
         with:
           artifact_type: 'container'
-          artifact_path: ${{ steps.scan-image.outputs.image_to_scan }}
+          artifact_path: ${{ needs.copacetic-vulnerability-scanning.outputs.final-image }}
           critical_threshold: 1
           high_threshold: 1
           medium_threshold: 1
@@ -211,18 +252,277 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: inspector-scan-results
+          name: inspector-scan-results-${{ inputs.release_version }}
           path: |
             ./sbom_output.json
             ./inspector_scan_output.json
             ./inspector_scan_output.csv
             ./inspector_scan_output.md
 
-      - name: Check vulnerability threshold
+      - name: Check AWS Inspector results and decide on push
+        id: inspector-decision
         run: |
-          if [[ "${{ steps.inspector.outputs.vulnerability_threshold_exceeded }}" == "true" ]]; then
-            echo "❌ Vulnerability threshold exceeded!"
+          SCAN_IMAGE="${{ needs.copacetic-vulnerability-scanning.outputs.final-image }}"
+          THRESHOLD_EXCEEDED="${{ steps.inspector.outputs.vulnerability_threshold_exceeded }}"
+          REQUIRES_PATCHING="${{ needs.copacetic-vulnerability-scanning.outputs.requires-patching }}"
+          PATCHING_SUCCESS="${{ needs.copacetic-vulnerability-scanning.outputs.patching-success }}"
+          
+          echo "=== AWS Inspector Scan Results ==="
+          echo "Scanned image: $SCAN_IMAGE"
+          echo "Threshold exceeded: $THRESHOLD_EXCEEDED"
+          echo "Required patching: $REQUIRES_PATCHING"
+          echo "Patching success: $PATCHING_SUCCESS"
+          echo "=================================="
+          
+          if [[ "$THRESHOLD_EXCEEDED" == "true" ]]; then
+            echo "❌ AWS Inspector vulnerability threshold exceeded!"
+            echo "🚫 Image will NOT be pushed to registry"
+            echo "📋 Check the uploaded scan results for vulnerability details"
+            echo "should_push=false" >> $GITHUB_OUTPUT
             exit 1
           else
-            echo "✅ Vulnerability scan passed!"
+            echo "✅ AWS Inspector vulnerability scan passed!"
+            echo "🎯 Image meets security thresholds"
+            echo "should_push=true" >> $GITHUB_OUTPUT
           fi
+
+      - name: Push approved image to Docker Hub
+        if: steps.inspector-decision.outputs.should_push == 'true'
+        run: |
+          IMAGE_TO_PUSH="${{ needs.copacetic-vulnerability-scanning.outputs.final-image }}"
+          
+          echo "🚀 Pushing security-approved image: $IMAGE_TO_PUSH"
+          docker push "$IMAGE_TO_PUSH"
+          
+          echo "✅ Successfully pushed approved image to Docker Hub"
+          echo "🔒 Image has passed both Copacetic and AWS Inspector security scans"
+
+
+# name: Deploy Charts to environments
+# on:
+#   workflow_dispatch:
+#     inputs:
+#       release_version:
+#         description: 'Release version (format: x-x-x)'
+#         required: true
+#         type: string
+#       environment:
+#         description: 'the environment to deploy to'
+#         required: true
+#         type: choice
+#         options: 
+#           - rc-next
+#           - staging
+#           - prod
+#       target_repo:
+#         description: 'Optional: Specific repository to deploy (default: all repos)'
+#         required: false
+#         type: string
+
+# jobs:
+#   execute-workflow:
+#     runs-on: ubuntu-latest
+#     permissions:
+#       contents: write
+#       packages: read
+#       pull-requests: write
+#     steps:
+#       - name: Checkout repository
+#         uses: actions/checkout@v4
+        
+#       - name: Run RC Next Workflow
+#         if: ${{ inputs.environment == 'rc-next' }}
+#         id: rc-next-workflow
+#         uses: ./.github/actions/rc-next-workflow
+#         with:
+#           release_version: ${{ inputs.release_version }}
+#           github_token: ${{ secrets.PAT_TOKEN }}
+#           github_actor: ${{ github.actor }}
+#           docker_hub_username: occasio
+#           docker_hub_token: ${{ secrets.DOCKER_HUB_TOKEN }}
+#           helm_username: ocamachine
+#           helm_registry: ghcr.io/occasio-technology-solutions
+#           target_repo: ${{ inputs.target_repo }}
+          
+#       - name: Run Staging Workflow
+#         if: ${{ inputs.environment == 'staging' }}
+#         id: staging-workflow
+#         uses: ./.github/actions/staging-workflow
+#         with:
+#           release_version: ${{ inputs.release_version }}
+#           github_token: ${{ secrets.PAT_TOKEN }}
+#           github_actor: ${{ github.actor }}
+#           target_repo: ${{ inputs.target_repo }}
+#           docker_hub_token: ${{ secrets.DOCKER_HUB_TOKEN }}
+#           docker_hub_username: owolabialiu
+          
+#       - name: Trigger Flux Deployment for RC Next and Staging
+#         uses: ./.github/actions/trigger-flux
+#         with:
+#           environment: ${{ inputs.environment }}
+#           github_token: ${{ secrets.PAT_TOKEN }}
+#           github_actor: ${{ github.actor }}
+#           chart_version: ${{ inputs.environment == 'rc-next' && steps.rc-next-workflow.outputs.platform_version || steps.staging-workflow.outputs.platform_version }}
+          
+#   build_platform:
+#     needs: execute-workflow
+#     if: ${{ inputs.environment == 'rc-next' }}
+#     runs-on: ubuntu-latest
+#     outputs:
+#       docker-tag: ${{ steps.build-chart.outputs.docker-tag }}
+#       docker-repo: ${{ steps.build-chart.outputs.docker-repo }}
+#       primary-image: ${{ steps.build-chart.outputs.primary-image }}
+#       image-ref: ${{ steps.extract-image-info.outputs.image_ref }}
+#     steps:
+#       - name: Checkout
+#         uses: actions/checkout@v4
+        
+#       - name: Build Chart
+#         id: build-chart
+#         uses: ./.github/actions/build-chart
+#         with:
+#           chart_dir: charts/platform
+#           chart_overwrite: true
+#           is_lib_chart: false
+#           git_branch: platform-${{ inputs.release_version }}
+#           docker-hub-user: owolabialiu
+#           docker-hub-token: ${{ secrets.DOCKER_HUB_TOKEN }}
+#           pat-token: ${{ secrets.PAT_TOKEN }}
+
+#       - name: Extract image info
+#         id: extract-image-info
+#         run: |
+#           # Extract the first tag from the build output
+#           DOCKER_REPO="${{ steps.build-chart.outputs.docker-repo }}"
+#           DOCKER_TAGS="${{ steps.build-chart.outputs.docker-tag }}"
+          
+#           # Get the first tag (assuming it's the primary one)
+#           FIRST_TAG=$(echo "$DOCKER_TAGS" | head -n1)
+          
+#           echo "Using image: $DOCKER_REPO:$FIRST_TAG"
+#           echo "image_ref=$DOCKER_REPO:$FIRST_TAG" >> $GITHUB_OUTPUT
+
+#   copacetic-vulnerability-scanning:
+#     runs-on: ubuntu-latest
+#     permissions:
+#       packages: read
+#       contents: write
+#     needs: build_platform
+#     if: ${{ inputs.environment == 'rc-next' }}
+#     outputs:
+#       patched-image: ${{ steps.copa.outputs.patched-image }}
+#       vuln-count: ${{ steps.vuln_count.outputs.vuln_count }}
+#     steps:
+#       - name: Generate Trivy Report
+#         uses: aquasecurity/trivy-action@0.29.0
+#         with:
+#           scan-type: "image"
+#           format: "json"
+#           output: "report.json"
+#           ignore-unfixed: true
+#           vuln-type: "os"
+#           image-ref: ${{ needs.build_platform.outputs.image-ref }}
+
+#       - name: Check vulnerability count
+#         id: vuln_count
+#         run: |
+#           report_file="report.json"
+#           vuln_count=$(jq 'if .Results then [.Results[] | select(.Class=="os-pkgs" and .Vulnerabilities!=null) | .Vulnerabilities[]] | length else 0 end' "$report_file")
+#           echo "vuln_count=$vuln_count" >> $GITHUB_OUTPUT
+
+#       - name: Run copa action
+#         if: steps.vuln_count.outputs.vuln_count != '0'
+#         id: copa
+#         uses: project-copacetic/copa-action@v1.2.1
+#         with:
+#           image: ${{ needs.build_platform.outputs.image-ref }}
+#           image-report: "report.json"
+#           patched-tag: v${{ inputs.release_version }}-patched
+  
+#       - name: Login to Docker Hub for patched image
+#         if: steps.copa.conclusion == 'success'
+#         uses: docker/login-action@v3.3.0
+#         with:
+#           username: owolabialiu
+#           password: ${{ secrets.DOCKER_HUB_TOKEN }}
+      
+#       - name: Push patched image to Docker Hub
+#         if: steps.copa.conclusion == 'success'
+#         run: docker push ${{ steps.copa.outputs.patched-image }}
+
+#   aws_inspector_scan:
+#     runs-on: ubuntu-latest
+#     permissions:
+#       id-token: write
+#       packages: read
+#       contents: write
+#     needs: [build_platform, copacetic-vulnerability-scanning]
+#     if: ${{ inputs.environment == 'rc-next' }}
+#     steps:
+#       # Setup your AWS credentials
+#       - name: Configure AWS credentials
+#         uses: aws-actions/configure-aws-credentials@v4
+#         with:
+#           aws-region: "us-east-1"
+#           role-to-assume: "arn:aws:iam::908027403160:role/aws-inspector"
+
+#       # Login to Docker Hub to ensure Inspector can pull the image
+#       - name: Login to Docker Hub
+#         uses: docker/login-action@v3.3.0
+#         with:
+#           username: owolabialiu
+#           password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+#       # Determine which image to scan (patched if available, otherwise original)
+#       - name: Determine image to scan
+#         id: scan-image
+#         run: |
+#           if [[ "${{ needs.copacetic-vulnerability-scanning.outputs.vuln-count }}" != "0" && "${{ needs.copacetic-vulnerability-scanning.outputs.patched-image }}" != "" ]]; then
+#             echo "image_to_scan=${{ needs.copacetic-vulnerability-scanning.outputs.patched-image }}" >> $GITHUB_OUTPUT
+#             echo "Scanning patched image: ${{ needs.copacetic-vulnerability-scanning.outputs.patched-image }}"
+#           else
+#             echo "image_to_scan=${{ needs.build_platform.outputs.image-ref }}" >> $GITHUB_OUTPUT
+#             echo "Scanning original image: ${{ needs.build_platform.outputs.image-ref }}"
+#           fi
+
+#       # Pull the image locally so Inspector can access it
+#       - name: Pull image locally
+#         run: |
+#           docker pull ${{ steps.scan-image.outputs.image_to_scan }}
+
+#       - name: Scan image with Inspector
+#         uses: aws-actions/vulnerability-scan-github-action-for-amazon-inspector@v1
+#         id: inspector
+#         with:
+#           artifact_type: 'container'
+#           artifact_path: ${{ steps.scan-image.outputs.image_to_scan }}
+#           critical_threshold: 1
+#           high_threshold: 1
+#           medium_threshold: 1
+#           low_threshold: 1
+#           other_threshold: 1
+#           display_vulnerability_findings: enabled
+#           output_sbom_path: ./sbom_output.json
+#           output_inspector_scan_path: ./inspector_scan_output.json
+#           output_inspector_scan_path_csv: ./inspector_scan_output.csv
+#           output_inspector_scan_path_markdown: ./inspector_scan_output.md
+
+#       - name: Upload Inspector scan results
+#         if: always()
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: inspector-scan-results
+#           path: |
+#             ./sbom_output.json
+#             ./inspector_scan_output.json
+#             ./inspector_scan_output.csv
+#             ./inspector_scan_output.md
+
+#       - name: Check vulnerability threshold
+#         run: |
+#           if [[ "${{ steps.inspector.outputs.vulnerability_threshold_exceeded }}" == "true" ]]; then
+#             echo "❌ Vulnerability threshold exceeded!"
+#             exit 1
+#           else
+#             echo "✅ Vulnerability scan passed!"
+#           fi
